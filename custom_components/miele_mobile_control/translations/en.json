@@ -1,0 +1,185 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to Miele",
+        "description": "Sign in with the Miele account the app uses. The appliance must be switched on and Mobile Start armed for control.",
+        "data": {
+          "email": "Email address",
+          "password": "Password",
+          "country": "Country code"
+        },
+        "data_description": {
+          "email": "The e-mail address of the Miele account",
+          "password": "The account password",
+          "country": "Two-letter country code of the account, e.g. NL, DE, GB"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Renew Miele credentials",
+        "description": "The Miele cloud no longer accepts the stored password for {email}. Enter the password of that account again.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "The Miele cloud refused the account: check email, password and country",
+      "cannot_connect": "Cannot reach the Miele cloud",
+      "unknown": "Unexpected error"
+    },
+    "abort": {
+      "already_configured": "This account is already configured",
+      "reauth_successful": "Credentials renewed"
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "mobile_start": {
+        "name": "Mobile Start",
+        "state": {
+          "on": "Armed",
+          "off": "Not armed"
+        }
+      },
+      "door": {
+        "name": "Door"
+      }
+    },
+    "button": {
+      "start": {
+        "name": "Start"
+      }
+    },
+    "select": {
+      "program": {
+        "name": "Program"
+      },
+      "temperature": {
+        "name": "Temperature"
+      },
+      "spin_speed": {
+        "name": "Spin speed"
+      },
+      "soiling": {
+        "name": "Soiling"
+      }
+    },
+    "sensor": {
+      "status": {
+        "name": "Status",
+        "state": {
+          "off": "Off",
+          "on": "On",
+          "programmed": "Program selected",
+          "waiting_to_start": "Waiting to start",
+          "running": "Running",
+          "paused": "Paused",
+          "finished": "Finished",
+          "failure": "Failure",
+          "unknown": "Unknown"
+        }
+      },
+      "remaining_time": {
+        "name": "Remaining time"
+      },
+      "finish_time": {
+        "name": "Finish time"
+      }
+    },
+    "switch": {
+      "extra_quick": {
+        "name": "Quick"
+      },
+      "extra_single": {
+        "name": "SingleWash"
+      },
+      "extra_water_plus": {
+        "name": "Water plus"
+      },
+      "extra_rinsing_plus": {
+        "name": "Extra rinse"
+      },
+      "extra_pre_wash": {
+        "name": "Pre-wash"
+      },
+      "extra_soak": {
+        "name": "Soak"
+      },
+      "extra_rinse_hold": {
+        "name": "Rinse hold"
+      },
+      "extra_extra_quiet": {
+        "name": "Extra quiet"
+      },
+      "extra_steam_smoothing": {
+        "name": "Pre-ironing"
+      },
+      "extra_pre_rinse": {
+        "name": "Pre-rinse"
+      },
+      "extra_microfibre": {
+        "name": "Microfibre"
+      },
+      "extra_gentle": {
+        "name": "Extra gentle"
+      },
+      "extra_allergo_wash": {
+        "name": "AllergoWash"
+      },
+      "extra_eco": {
+        "name": "Eco"
+      },
+      "extra_intensive": {
+        "name": "Intensive"
+      },
+      "extra_starch_hold": {
+        "name": "Starch hold"
+      },
+      "extra_hygiene_plus": {
+        "name": "Hygiene plus"
+      }
+    }
+  },
+  "services": {
+    "set_program": {
+      "name": "Set program",
+      "description": "Select a washing machine program and optionally its temperature, spin speed, soiling and extras, and start it.",
+      "fields": {
+        "program": {
+          "name": "Program",
+          "description": "Program name (e.g. Cottons) or numeric program id."
+        },
+        "temperature": {
+          "name": "Temperature",
+          "description": "Wash temperature in °C. Use 0 for cold. Eco variants are separate values, see the eco field."
+        },
+        "eco": {
+          "name": "Eco",
+          "description": "Use the eco variant of the temperature, when the program offers one."
+        },
+        "spin_speed": {
+          "name": "Spin speed",
+          "description": "Spin speed in rpm. Use 0 for no spin."
+        },
+        "soiling": {
+          "name": "Soiling",
+          "description": "Soiling level 1-3 of the load. Which levels are offered depends on the program."
+        },
+        "extras": {
+          "name": "Extras",
+          "description": "Extras to switch on; every other extra that can be set from the app is switched off."
+        },
+        "start": {
+          "name": "Start",
+          "description": "Start the wash after setting it. This cannot be undone from Home Assistant and uses up the armed Mobile Start — re-arm Mobile Start at the machine for the next cycle."
+        }
+      }
+    }
+  },
+  "exceptions": {
+    "mobile_start_not_armed": {
+      "message": "Switch the washer on and arm Mobile Start at the machine, then try again"
+    }
+  }
+}

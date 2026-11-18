@@ -1,0 +1,508 @@
+# Example dashboard for Miele Mobile Control.
+#
+# A sections view with one row per topic, using only stock cards. It is the
+# published twin of the live "Miele Mobile Control" dashboard: identical,
+# except that this file additionally contains the Start tile (guarded by a
+# confirmation dialog on every tap path) and a set_program preset button. Add
+# it as a new dashboard: Settings -> Dashboards -> Add dashboard -> New
+# section from scratch -> Edit -> raw configuration, and paste the YAML below
+# (from "type: sections" down).
+#
+# All entity ids use the "wsi863" prefix, which is the appliance's TechType —
+# replace it with your own machine's model name. Find your device id under
+# Settings -> Devices & services -> Miele Mobile Control -> your washer; in
+# the visual card editor you pick the device from a dropdown instead of
+# typing the id.
+
+type: sections
+max_columns: 2
+title: Miele Mobile Control
+sections:
+  # Status row, always visible — also the only thing that makes sense while
+  # Mobile Start is not armed.
+  - type: grid
+    cards:
+      - type: heading
+        heading: Washer
+      - type: tile
+        entity: sensor.wsi863_status
+        name: Machine
+        icon: mdi:washing-machine
+        grid_options:
+          columns: 6
+      - type: tile
+        entity: sensor.wsi863_remaining_time
+        name: Remaining
+        grid_options:
+          columns: 6
+      - type: tile
+        entity: sensor.wsi863_finish_time
+        name: Finish
+        grid_options:
+          columns: 6
+      - type: tile
+        entity: binary_sensor.wsi863_mobile_start
+        name: Mobile Start
+        grid_options:
+          columns: 6
+      # This tile is intentionally NOT on the live dashboard: it starts the
+      # wash and spends the armed Mobile Start, which cannot be undone from
+      # Home Assistant. The confirmation dialog guards every tap path
+      # (main tap and icon tap); hold actions are disabled.
+      - type: tile
+        entity: button.wsi863_start
+        name: Start
+        icon: mdi:play
+        grid_options:
+          columns: 6
+        tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.wsi863_start
+          confirmation:
+            text: >-
+              Start the selected program now? The machine will begin
+              washing and this cannot be undone from Home Assistant.
+        icon_tap_action:
+          action: perform-action
+          perform_action: button.press
+          target:
+            entity_id: button.wsi863_start
+          confirmation:
+            text: >-
+              Start the selected program now? The machine will begin
+              washing and this cannot be undone from Home Assistant.
+        hold_action:
+          action: none
+  # Shown only while Mobile Start is not armed at the machine. Arming must be
+  # repeated for every wash, so this explains the dial sequence instead of
+  # showing a wall of Unavailable controls.
+  - type: grid
+    cards:
+      - type: conditional
+        conditions:
+          - condition: state
+            entity: binary_sensor.wsi863_mobile_start
+            state: "off"
+        card:
+          type: markdown
+          content: >
+            **Mobile Start is not armed.** Do this at the machine, for every
+            wash: close the door, turn the dial to **MobileStart**, press
+            **Start**. The controls below appear within about 30 s.
+  # Everything from here down needs Mobile Start armed. Section visibility
+  # hides the rows entirely instead of rendering every control Unavailable.
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Program
+      # One-tap rows for the programs used most (two rows of three so no name
+      # truncates on a phone); the dropdown below covers all 20. Button cards
+      # have no active state — the dropdown and status row show the confirmed
+      # program a few seconds after the tap.
+      - type: horizontal-stack
+        grid_options:
+          columns: full
+        cards:
+          - type: button
+            name: Cottons
+            icon: mdi:tshirt-crew
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Cottons
+          - type: button
+            name: Min. iron
+            icon: mdi:hanger
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Minimum iron
+          - type: button
+            name: Delicates
+            icon: mdi:water-outline
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Delicates
+      - type: horizontal-stack
+        grid_options:
+          columns: full
+        cards:
+          - type: button
+            name: Woollens
+            icon: mdi:sheep
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Woollens
+          - type: button
+            name: Express 20
+            icon: mdi:flash
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Express 20
+          - type: button
+            name: Eco 40-60
+            icon: mdi:leaf
+            tap_action:
+              action: perform-action
+              perform_action: select.select_option
+              target:
+                entity_id: select.wsi863_program
+              data:
+                option: Eco 40-60
+      - type: tile
+        entity: select.wsi863_program
+        name: All programs
+        features:
+          - type: select-options
+            style: dropdown
+      # The washer resets temperature, spin and extras to the new program's
+      # defaults whenever a program is selected (the app behaves the same).
+      - type: markdown
+        content: Changing the program resets temperature, spin and extras.
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Temperature
+      # Two tiles so every label stays readable at 390 px: with all options in
+      # one buttons row, "40 °C Eco" clipped to "40 °…" and was
+      # indistinguishable from "40 °C". The feature's options: list picks the
+      # buttons; options the program does not offer simply don't render.
+      - type: tile
+        entity: select.wsi863_temperature
+        name: Temperature
+        grid_options:
+          columns: 12
+        features:
+          - type: select-options
+            style: buttons
+            options:
+              - Cold
+              - 20 °C
+              - 30 °C
+              - 40 °C
+              - 50 °C
+              - 60 °C
+              - 75 °C
+              - 90 °C
+      - type: tile
+        entity: select.wsi863_temperature
+        name: Eco
+        grid_options:
+          columns: 12
+        features:
+          - type: select-options
+            style: buttons
+            options:
+              - 40 °C Eco
+              - 60 °C Eco
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Spin & soiling
+      # Stacked full-width tiles, not a horizontal-stack: side by side the spin
+      # buttons overflowed a 390 px phone.
+      - type: tile
+        entity: select.wsi863_spin_speed
+        name: Spin speed
+        grid_options:
+          columns: 12
+        features:
+          - type: select-options
+            style: buttons
+      - type: tile
+        entity: select.wsi863_soiling
+        name: Soiling
+        grid_options:
+          columns: 12
+        features:
+          - type: select-options
+            style: buttons
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Extras
+      # Favorites first, then the rest, single-line inline toggles. Per-card
+      # visibility drops every extra the selected program does not offer (its
+      # switch is then unavailable).
+      - type: tile
+        entity: switch.wsi863_extra_quiet
+        name: Extra quiet
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_extra_quiet
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_soak
+        name: Soak
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_soak
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_extra_gentle
+        name: Extra gentle
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_extra_gentle
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_quick
+        name: Quick
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_quick
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_singlewash
+        name: SingleWash
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_singlewash
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_water_plus
+        name: Water plus
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_water_plus
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_pre_wash
+        name: Pre-wash
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_pre_wash
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_rinse_hold
+        name: Rinse hold
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_rinse_hold
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_pre_ironing
+        name: Pre-ironing
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_pre_ironing
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_allergowash
+        name: AllergoWash
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_allergowash
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_intensive
+        name: Intensive
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_intensive
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_extra_rinse
+        name: Extra rinse
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_extra_rinse
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_pre_rinse
+        name: Pre-rinse
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_pre_rinse
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_microfibre
+        name: Microfibre
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_microfibre
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_eco
+        name: Eco
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_eco
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_starch_hold
+        name: Starch hold
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_starch_hold
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+      - type: tile
+        entity: switch.wsi863_hygiene_plus
+        name: Hygiene plus
+        grid_options:
+          columns: 6
+        visibility:
+          - condition: state
+            entity: switch.wsi863_hygiene_plus
+            state_not: unavailable
+        features_position: inline
+        hide_state: true
+        features:
+          - type: toggle
+  # Calls set_program WITHOUT start: it only selects the program and its
+  # options; the Start button above fires the wash. Replace YOUR_DEVICE_ID
+  # with your washer's device id (Settings -> Devices & services -> Miele
+  # Mobile Control -> your washer), or pick the device in the card editor.
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Presets
+      - type: button
+        name: Set Cottons 20 °C
+        icon: mdi:washing-machine
+        tap_action:
+          action: perform-action
+          perform_action: miele_mobile_control.set_program
+          target:
+            device_id: YOUR_DEVICE_ID
+          data:
+            program: Cottons
+            temperature: 20
+            spin_speed: 1400
+            start: false

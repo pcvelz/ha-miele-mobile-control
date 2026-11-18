@@ -1,0 +1,58 @@
+set_program:
+  target:
+    entity:
+      integration: miele_mobile_control
+  fields:
+    program:
+      required: true
+      example: Cottons
+      selector:
+        text:
+    temperature:
+      selector:
+        number:
+          min: 0
+          max: 95
+          unit_of_measurement: "°C"
+    eco:
+      selector:
+        boolean:
+    spin_speed:
+      selector:
+        number:
+          min: 0
+          max: 1800
+          unit_of_measurement: "rpm"
+          mode: slider
+          step: 100
+    soiling:
+      selector:
+        number:
+          min: 1
+          max: 3
+    extras:
+      selector:
+        select:
+          multiple: true
+          options:
+            - quick
+            - single
+            - water_plus
+            - rinsing_plus
+            - pre_wash
+            - soak
+            - rinse_hold
+            - extra_quiet
+            - steam_smoothing
+            - pre_rinse
+            - microfibre
+            - gentle
+            - allergo_wash
+            - eco
+            - intensive
+            - starch_hold
+            - hygiene_plus
+    start:
+      default: false
+      selector:
+        boolean:

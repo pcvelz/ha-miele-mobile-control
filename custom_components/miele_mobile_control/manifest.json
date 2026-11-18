@@ -1,0 +1,12 @@
+{
+  "domain": "miele_mobile_control",
+  "name": "Miele Mobile Control",
+  "codeowners": ["@pcvelz"],
+  "config_flow": true,
+  "documentation": "https://github.com/pcvelz/ha-miele-mobile-control",
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "issue_tracker": "https://github.com/pcvelz/ha-miele-mobile-control/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}
