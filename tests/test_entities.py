@@ -68,6 +68,50 @@ def test_finish_time():
     assert const.finish_time({"RemainingTime": [0, 0]}, now) is None
 
 
+# ---------- live readings of the running program ----------
+
+
+def test_elapsed_minutes():
+    assert const.elapsed_minutes({"ElapsedTime": [1, 30]}) == 90
+    assert const.elapsed_minutes({"ElapsedTime": [0, 0]}) == 0
+    assert const.elapsed_minutes({"ElapsedTime": [2]}) is None
+    assert const.elapsed_minutes({}) is None
+    assert const.elapsed_minutes({"ElapsedTime": "x"}) is None
+
+
+def test_start_time():
+    now = datetime(2026, 11, 19, 12, 0, tzinfo=timezone.utc)
+    assert const.start_time({"StartTime": [1, 30]}, now) == now + timedelta(
+        minutes=90
+    )
+    # no delayed start set
+    assert const.start_time({"StartTime": [0, 0]}, now) is None
+    assert const.start_time({}, now) is None
+
+
+def test_target_temperature():
+    # centi-°C, measured on the WSI863 with Cottons 20 °C selected
+    assert const.target_temperature({"TargetTemperature": [2000, -32768, -32768]}) == 20.0
+    # the -32768 "no value" marker means none
+    assert const.target_temperature({"TargetTemperature": [-32768, -32768]}) is None
+    assert const.target_temperature({"TargetTemperature": []}) is None
+    assert const.target_temperature({}) is None
+
+
+def test_spin_speed():
+    assert const.spin_speed({"SpinningSpeed": 1400}) == 1400
+    assert const.spin_speed({"SpinningSpeed": 0}) == 0
+    assert const.spin_speed({}) is None
+    assert const.spin_speed({"SpinningSpeed": "1400"}) is None
+
+
+def test_program_phase():
+    # raw number, no names invented
+    assert const.program_phase({"ProgramPhase": 260}) == 260
+    assert const.program_phase({"ProgramPhase": 0}) == 0
+    assert const.program_phase({}) is None
+
+
 # ---------- translation files ----------
 
 def _load_json(name: str) -> dict:
@@ -108,6 +152,47 @@ def test_new_entities_translated():
     states = strings["sensor"]["status"]["state"]
     for state in const.STATUS_STATES:
         assert state in states, f"status state {state!r} has no translation"
+
+
+def test_wash_record_entities_translated():
+    strings = _load_json("strings.json")["entity"]
+    sensors = strings["sensor"]
+    for key in (
+        "wash_state",
+        "wash_program",
+        "wash_temperature",
+        "wash_spin_speed",
+        "wash_soiling",
+        "wash_extras",
+        "wash_started",
+        "wash_finished",
+        "wash_duration",
+    ):
+        assert sensors[key]["name"], f"missing sensor translation {key}"
+    # every enum state of the wash state sensor must be translated
+    states = sensors["wash_state"]["state"]
+    for state in ("none", "running", "finished", "interrupted"):
+        assert state in states, f"wash state {state!r} has no translation"
+
+
+def test_live_reading_entities_translated():
+    strings = _load_json("strings.json")["entity"]["sensor"]
+    for key in (
+        "target_temperature",
+        "current_spin_speed",
+        "elapsed_time",
+        "program_phase",
+        "start_time",
+    ):
+        assert strings[key]["name"], f"missing sensor translation {key}"
+
+
+def test_every_wash_extra_binary_sensor_has_translation():
+    strings = _load_json("strings.json")["entity"]["binary_sensor"]
+    for extra in washer.EXTRAS:
+        key = f"wash_{extra}"
+        assert key in strings, f"missing translation for binary_sensor {key}"
+        assert strings[key]["name"]
 
 
 def test_start_field_warns_about_mobile_start():

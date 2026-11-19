@@ -96,6 +96,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MieleConfigEntry) -> boo
         entry.data.get(CONF_COUNTRY, DEFAULT_COUNTRY),
     )
     coordinator = MieleCoordinator(hass, entry, api)
+    coordinator.async_restore_wash_records()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

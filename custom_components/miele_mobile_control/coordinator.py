@@ -11,14 +11,17 @@ serializes read-modify-write so back-to-back changes cannot lose each other.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
 import logging
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import restore_state
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MieleApiError, MieleAuthError, MieleCloud, MieleConnectionError
@@ -29,6 +32,8 @@ from .washer import (
     LEAF_PROGRAM_CONTEXT,
     LEAF_PROGRAM_LIST,
     StartRefusedError,
+    WashRecord,
+    WashTracker,
     WasherSession,
     WriteNotConfirmedError,
     mobile_start_armed,
@@ -57,6 +62,7 @@ class WasherData:
     context: Any = None  # ProgramContext | None
     program_ids: list[int] = field(default_factory=list)
     reachable: bool = True
+    wash: WashRecord | None = None  # current wash record (see WashTracker)
 
     @property
     def armed(self) -> bool:
@@ -87,6 +93,41 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         self._program_lists: dict[str, list[int]] = {}
         # Serialized write sessions per appliance.
         self._sessions: dict[str, WasherSession] = {}
+        # Wash-record state machine per appliance, seeded from the restore
+        # cache of the previous run by async_restore_wash_records().
+        self._wash_trackers: dict[str, WashTracker] = {}
+
+    # ---------- wash record restore ----------
+
+    @callback
+    def async_restore_wash_records(self) -> None:
+        """Seed the wash trackers from this entry's stored wash_state sensors.
+
+        Runs in async_setup_entry before the first refresh, when the restore
+        cache (filled during bootstrap) and the entity registry (which
+        survives restarts) are both available. A wash that was running when
+        Home Assistant stopped keeps its record; the machine's next poll
+        closes it instead of starting a fresh, context-less one.
+        """
+        registry = er.async_get(self.hass)
+        restore_data = restore_state.async_get(self.hass)
+        for registry_entry in er.async_entries_for_config_entry(
+            registry, self.config_entry.entry_id
+        ):
+            unique_id = registry_entry.unique_id or ""
+            if registry_entry.domain != "sensor" or not unique_id.endswith(
+                "_wash_state"
+            ):
+                continue
+            fab = unique_id[: -len("_wash_state")]
+            stored = restore_data.async_get_stored_state(registry_entry.entity_id)
+            if stored is None or stored.extra_data is None:
+                continue
+            record = WashRecord.from_dict(
+                stored.extra_data.json_dict.get("record")
+            )
+            if record is not None and record.state != "none":
+                self._wash_trackers[fab] = WashTracker(record=record)
 
     # ---------- lookup ----------
 
@@ -154,6 +195,7 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
                             context=stale.context,
                             program_ids=stale.program_ids,
                             reachable=False,
+                            wash=stale.wash,
                         )
                     )
                 continue
@@ -178,6 +220,14 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
             if not armed:
                 self._program_lists.pop(fab, None)
 
+            # The wash record: keep the newest good context and run the
+            # none/running/finished/interrupted transitions. The tracker is
+            # independent of whether 2/1574 can actually be read in Status
+            # 4/5 — it freezes whatever context was last seen in 3/4.
+            tracker = self._wash_trackers.setdefault(fab, WashTracker())
+            tracker.note_context(context)
+            wash = tracker.update(status, now=time.time(), state=state)
+
             washers.append(
                 WasherData(
                     fab=fab,
@@ -185,6 +235,7 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
                     state=state,
                     context=context,
                     program_ids=self._program_lists.get(fab, []),
+                    wash=wash,
                 )
             )
         return washers

@@ -44,6 +44,57 @@
       },
       "door": {
         "name": "Door"
+      },
+      "wash_quick": {
+        "name": "Wash Quick"
+      },
+      "wash_single": {
+        "name": "Wash SingleWash"
+      },
+      "wash_water_plus": {
+        "name": "Wash Water plus"
+      },
+      "wash_rinsing_plus": {
+        "name": "Wash Extra rinse"
+      },
+      "wash_pre_wash": {
+        "name": "Wash Pre-wash"
+      },
+      "wash_soak": {
+        "name": "Wash Soak"
+      },
+      "wash_rinse_hold": {
+        "name": "Wash Rinse hold"
+      },
+      "wash_extra_quiet": {
+        "name": "Wash Extra quiet"
+      },
+      "wash_steam_smoothing": {
+        "name": "Wash Pre-ironing"
+      },
+      "wash_pre_rinse": {
+        "name": "Wash Pre-rinse"
+      },
+      "wash_microfibre": {
+        "name": "Wash Microfibre"
+      },
+      "wash_gentle": {
+        "name": "Wash Extra gentle"
+      },
+      "wash_allergo_wash": {
+        "name": "Wash AllergoWash"
+      },
+      "wash_eco": {
+        "name": "Wash Eco"
+      },
+      "wash_intensive": {
+        "name": "Wash Intensive"
+      },
+      "wash_starch_hold": {
+        "name": "Wash Starch hold"
+      },
+      "wash_hygiene_plus": {
+        "name": "Wash Hygiene plus"
       }
     },
     "button": {
@@ -85,6 +136,54 @@
       },
       "finish_time": {
         "name": "Finish time"
+      },
+      "target_temperature": {
+        "name": "Target temperature"
+      },
+      "current_spin_speed": {
+        "name": "Current spin speed"
+      },
+      "elapsed_time": {
+        "name": "Elapsed time"
+      },
+      "program_phase": {
+        "name": "Program phase"
+      },
+      "start_time": {
+        "name": "Start time"
+      },
+      "wash_state": {
+        "name": "Wash state",
+        "state": {
+          "none": "None",
+          "running": "Running",
+          "finished": "Finished",
+          "interrupted": "Interrupted"
+        }
+      },
+      "wash_program": {
+        "name": "Wash program"
+      },
+      "wash_temperature": {
+        "name": "Wash temperature"
+      },
+      "wash_spin_speed": {
+        "name": "Wash spin speed"
+      },
+      "wash_soiling": {
+        "name": "Wash soiling"
+      },
+      "wash_extras": {
+        "name": "Wash extras"
+      },
+      "wash_started": {
+        "name": "Wash started"
+      },
+      "wash_finished": {
+        "name": "Wash finished"
+      },
+      "wash_duration": {
+        "name": "Wash duration"
       }
     },
     "switch": {

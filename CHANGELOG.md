@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.1.1
+
+The wash keeps its details.
+
+- **A wash record per washer**, frozen the moment the program begins (waiting to start or
+  running) from the last program context read while Mobile Start was armed. One sensor per
+  detail, all kept during and after the run: `wash_program`, `wash_temperature` (°C, `eco`
+  attribute), `wash_spin_speed`, `wash_soiling`, `wash_extras` (readable names plus one
+  boolean attribute per offered extra), `wash_started`, `wash_finished`, `wash_duration`
+  and `wash_state` (`none` / `running` / `finished` / `interrupted`). A new wash replaces
+  the record.
+- **One `wash_<extra>` binary sensor per extra** (17): on when that extra was selected for
+  the recorded wash, each chartable and usable in automations.
+- **The record survives a Home Assistant restart**: it is restored into the coordinator
+  before the first poll and the wash sensors are RestoreSensors.
+- **Started at the machine without the integration seeing a program?** The record takes
+  the program from `/State` `ProgramID` and marks temperature, spin, soiling and extras
+  unknown — nothing is invented.
+- **Live readings while the program runs**: `target_temperature`, `current_spin_speed`,
+  `elapsed_time`, the raw `program_phase` number (diagnostic sensor, no invented names) and
+  `start_time` for a delayed start.
+- Existing entity ids, unique ids and behaviour are unchanged; new unique ids follow
+  `f"{fab}_{key}"`.
+
+No real wash has been run through this integration yet: everything after "program selected"
+is covered by tests only, and whether the program context can still be read while the washer
+waits or runs is untested (the record does not depend on it). See the README limitations.
+
 ## 0.1.0
 
 First release.

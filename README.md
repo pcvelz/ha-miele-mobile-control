@@ -34,6 +34,9 @@ The official Miele integration can only send a program number. This one sets eve
 - **Every change is read back** from the machine, so what you see is what it will wash.
 - **Start from Home Assistant**, with a button or from an automation.
 - **Status that always works:** what the machine is doing, time remaining, finish time, door, and whether it is armed.
+- **Live readings while it runs:** target temperature, current spin speed, elapsed time, the raw program phase number, and a delayed start time.
+- **A record of every wash:** program, temperature (with an eco flag), spin speed, soiling and every extra it ran with — separate sensors per detail, kept during the run and after it ends, surviving a Home Assistant restart. A wash started at the machine still records its program; details the integration never saw stay honestly unknown.
+- **One binary sensor per wash extra** (Wash Soak, Wash Extra quiet, …): on when that extra was selected for the recorded wash, ready for charts and automations.
 - **One action for presets and automations:** program, temperature, spin and extras in a single call.
 
 It runs next to the official Miele integration and does not interfere with it. Keep that one for its sensors and history; add this one for control.
@@ -141,6 +144,8 @@ One device per washing machine on your Miele account, named after its model.
 | **Options** | `select.<machine>_temperature`, `_spin_speed`, `_soiling` |
 | **Extras** | one `switch.<machine>_…` per extra. Unavailable when the selected program does not offer it; the `offered` attribute lets a dashboard hide it. |
 | **Status** | `sensor.<machine>_status`, `_remaining_time`, `_finish_time`; `binary_sensor.<machine>_mobile_start`, `_door`. These work whether or not the machine is armed. |
+| **Live (while running)** | `sensor.<machine>_target_temperature`, `_current_spin_speed`, `_elapsed_time`, `_program_phase` (raw number, diagnostic), `_start_time` (only with a delayed start). |
+| **Wash record** | `sensor.<machine>_wash_state` (`none`/`running`/`finished`/`interrupted`), `_wash_program`, `_wash_temperature` (°C, `eco` attribute), `_wash_spin_speed`, `_wash_soiling`, `_wash_extras` (names plus one boolean attribute per offered extra), `_wash_started`, `_wash_finished`, `_wash_duration`; one `binary_sensor.<machine>_wash_…` per extra. The record is frozen when the program begins and kept until the next wash replaces it; it survives a restart. |
 | **Start** | `button.<machine>_start` |
 
 On a WSI863:
@@ -158,9 +163,25 @@ switch.wsi863_pre_rinse          switch.wsi863_microfibre
 switch.wsi863_eco                switch.wsi863_starch_hold
 switch.wsi863_hygiene_plus
 sensor.wsi863_status             sensor.wsi863_remaining_time
-sensor.wsi863_finish_time
+sensor.wsi863_finish_time        sensor.wsi863_start_time
+sensor.wsi863_target_temperature sensor.wsi863_current_spin_speed
+sensor.wsi863_elapsed_time       sensor.wsi863_program_phase
+sensor.wsi863_wash_state         sensor.wsi863_wash_program
+sensor.wsi863_wash_temperature   sensor.wsi863_wash_spin_speed
+sensor.wsi863_wash_soiling       sensor.wsi863_wash_extras
+sensor.wsi863_wash_started       sensor.wsi863_wash_finished
+sensor.wsi863_wash_duration
 binary_sensor.wsi863_mobile_start
 binary_sensor.wsi863_door
+binary_sensor.wsi863_wash_quick         binary_sensor.wsi863_wash_singlewash
+binary_sensor.wsi863_wash_water_plus    binary_sensor.wsi863_wash_extra_rinse
+binary_sensor.wsi863_wash_pre_wash      binary_sensor.wsi863_wash_soak
+binary_sensor.wsi863_wash_rinse_hold    binary_sensor.wsi863_wash_extra_quiet
+binary_sensor.wsi863_wash_pre_ironing   binary_sensor.wsi863_wash_pre_rinse
+binary_sensor.wsi863_wash_microfibre    binary_sensor.wsi863_wash_extra_gentle
+binary_sensor.wsi863_wash_allergowash   binary_sensor.wsi863_wash_eco
+binary_sensor.wsi863_wash_intensive     binary_sensor.wsi863_wash_starch_hold
+binary_sensor.wsi863_wash_hygiene_plus
 button.wsi863_start
 ```
 
@@ -194,7 +215,10 @@ The official integration uses Miele's public 3rd Party API. For a washing machin
 - **Tested on one appliance:** WSI863, Wi-Fi module EK057, firmware 08.37.
 - **Washing machines only.** Dryers and washer-dryers are not listed.
 - **Start is new.** Starting from Home Assistant is implemented the way the app does it, but version 0.1.0 has not exercised it on a real machine yet. It is guarded: the machine's state is read fresh, a second start within 30 seconds is refused, a start is never retried automatically, and you get an error if the washer does not begin.
-- **Some status values are untested.** Off, on, program selected, waiting and running were seen on the test machine. Paused, finished and failure follow Miele's public documentation.
+- **No real wash has been observed end to end.** Only off, on and program selected were seen on the test machine. Everything from "waiting to start" onwards — the wash record, its finish and duration, the live readings of a running program — is covered by tests against captured data, not by a real run. Report what your machine shows.
+- **The wash record is honest about what it never saw.** It freezes the last program context read while Mobile Start was armed with a program selected. A wash started at the machine without the integration seeing a context records only the program (`/State` `ProgramID`); temperature, spin, soiling and extras stay unknown, never invented. Whether the program context can still be read while the washer waits to start or runs is untested, so the record deliberately does not depend on it.
+- **"Started" means armed and counting down.** `wash_started` is the moment the machine entered waiting-to-start or running, so it includes a delayed start. If waiting is cancelled at the machine, the record closes as interrupted.
+- **Some status values are untested.** Off, on, program selected, waiting and running were seen on the test machine. Paused, finished and failure follow Miele's public documentation; the wash record treats only Status 7 as "finished" and everything else that ends a run as "interrupted".
 - **European Miele service only, e-mail and password sign-in only.** Miele is moving countries to a newer sign-in (France was the first); accounts there cannot log in.
 - **Not there yet:** TwinDos dosing, stains, capsule dosing, delayed start.
 - **Soiling shows as 1, 2, 3.** The names of the levels are not confirmed.

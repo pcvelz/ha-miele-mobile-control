@@ -104,6 +104,79 @@ def finish_time(state: Mapping[str, Any], now: datetime) -> datetime | None:
     return now + timedelta(minutes=remaining)
 
 
+def elapsed_minutes(state: Mapping[str, Any]) -> int | None:
+    """Elapsed program time in minutes from ElapsedTime [h, m].
+
+    None when the appliance reports no elapsed time. A reported [0, 0] is a
+    real 0 (the program just started), not "no data".
+    """
+    return _hm_minutes(state.get("ElapsedTime"))
+
+
+def start_time(state: Mapping[str, Any], now: datetime) -> datetime | None:
+    """Delayed start moment: now + StartTime, when one is set.
+
+    None when StartTime is [0, 0] or missing — the machine starts
+    immediately or not at all.
+    """
+    delay = _hm_minutes(state.get("StartTime"))
+    if not delay:
+        return None
+    return now + timedelta(minutes=delay)
+
+
+def target_temperature(state: Mapping[str, Any]) -> float | None:
+    """Target wash temperature in °C: TargetTemperature[0] / 100.
+
+    None when the slot is absent or carries the -32768 "no value" marker.
+    """
+    return _centi_value(state.get("TargetTemperature"))
+
+
+def spin_speed(state: Mapping[str, Any]) -> int | None:
+    """Current spin speed in rpm (State.SpinningSpeed); None when absent."""
+    value = state.get("SpinningSpeed")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def program_phase(state: Mapping[str, Any]) -> int | None:
+    """Raw State.ProgramPhase number; None when absent.
+
+    The numbers are published without names, so this is exposed as a
+    diagnostic sensor and no phase names are invented.
+    """
+    value = state.get("ProgramPhase")
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _hm_minutes(value: Any) -> int | None:
+    """h/min pair as total minutes; None when not a usable pair."""
+    if not isinstance(value, (list, tuple)) or len(value) < 2:
+        return None
+    try:
+        hours, minutes = int(value[0]), int(value[1])
+    except (TypeError, ValueError):
+        return None
+    return hours * 60 + minutes
+
+
+def _centi_value(value: Any) -> float | None:
+    """First slot of a centi-unit array as a float; None when absent."""
+    if not isinstance(value, (list, tuple)) or not value:
+        return None
+    try:
+        number = float(value[0])
+    except (TypeError, ValueError):
+        return None
+    if number == -32768:
+        return None
+    return number / 100
+
+
 # ---------- set_program action helpers (pure, tested in tests/test_action.py) ----------
 
 

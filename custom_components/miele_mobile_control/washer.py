@@ -61,6 +61,29 @@ EXTRAS: dict[str, int] = {
     "hygiene_plus": 18,
 }
 
+# Readable names of the extras, in the Miele app's wording. The switch and
+# wash binary-sensor translations in strings.json carry the same names;
+# tests/test_entities.py keeps the two in sync.
+EXTRA_NAMES: dict[str, str] = {
+    "quick": "Quick",
+    "single": "SingleWash",
+    "water_plus": "Water plus",
+    "rinsing_plus": "Extra rinse",
+    "pre_wash": "Pre-wash",
+    "soak": "Soak",
+    "rinse_hold": "Rinse hold",
+    "extra_quiet": "Extra quiet",
+    "steam_smoothing": "Pre-ironing",
+    "pre_rinse": "Pre-rinse",
+    "microfibre": "Microfibre",
+    "gentle": "Extra gentle",
+    "allergo_wash": "AllergoWash",
+    "eco": "Eco",
+    "intensive": "Intensive",
+    "starch_hold": "Starch hold",
+    "hygiene_plus": "Hygiene plus",
+}
+
 # Extras the app writes on a washer (koti WashingMachine::DOP2_EXTRAS);
 # a service call writes these off unless listed.
 WRITTEN_EXTRAS = (
@@ -471,6 +494,218 @@ def start_allowed(state: dict[str, Any]) -> bool:
     """Whether the app would offer start: Status 3 (programmed) under Mobile
     Start (koti Laundry::Rules#programmed?)."""
     return state.get("Status") == 3 and mobile_start_armed(state)
+
+
+# ---------- wash record (pure, tested in tests/test_wash.py) ----------
+
+# States of sensor.<machine>_wash_state.
+WASH_NONE = "none"
+WASH_RUNNING = "running"
+WASH_FINISHED = "finished"
+WASH_INTERRUPTED = "interrupted"
+
+# /State Status codes in which a started wash keeps running (4 and 5 are
+# verified on the WSI863; 6 "paused" is unverified and treated as still
+# running). Every other code closes the record.
+WASH_KEEP_RUNNING = (4, 5, 6)
+
+
+@dataclass
+class WashRecord:
+    """What one wash ran with, frozen when the program began.
+
+    Built from the last program context the integration saw while the washer
+    was armed with a program selected; when the wash was started at the
+    machine without the integration ever seeing a context, only program_id /
+    program_name come from /State ProgramID and every other field stays
+    None (or empty) — values are never invented.
+
+    *started* and *finished* are UTC epoch seconds from the poll clock;
+    *duration* is whole minutes and is set when the record closes.
+    """
+
+    state: str  # WASH_RUNNING / WASH_FINISHED / WASH_INTERRUPTED
+    program_id: int | None
+    program_name: str | None
+    temperature: int | None  # °C; None = unknown (not seen by the integration)
+    eco: bool  # the recorded temperature is the eco variant
+    spin_rpm: int | None  # 0 = no spin; None = unknown
+    soiling: int | None  # None = unknown or not offered
+    extras: dict[str, bool]  # every extra the recorded program offered
+    extras_offered: tuple[str, ...]  # offered extras, in EXTRAS order
+    started: float
+    finished: float | None
+    duration: int | None
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe copy for RestoreEntity storage."""
+        return {
+            "state": self.state,
+            "program_id": self.program_id,
+            "program_name": self.program_name,
+            "temperature": self.temperature,
+            "eco": self.eco,
+            "spin_rpm": self.spin_rpm,
+            "soiling": self.soiling,
+            "extras": dict(self.extras),
+            "extras_offered": list(self.extras_offered),
+            "started": self.started,
+            "finished": self.finished,
+            "duration": self.duration,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any) -> WashRecord | None:
+        """Rebuild from to_dict(); anything unexpected gives None."""
+        if not isinstance(data, dict):
+            return None
+        try:
+            return cls(
+                state=str(data["state"]),
+                program_id=_opt_int(data.get("program_id")),
+                program_name=(
+                    None if data.get("program_name") is None
+                    else str(data["program_name"])
+                ),
+                temperature=_opt_int(data.get("temperature")),
+                eco=bool(data.get("eco")),
+                spin_rpm=_opt_int(data.get("spin_rpm")),
+                soiling=_opt_int(data.get("soiling")),
+                extras={str(k): bool(v) for k, v in (data.get("extras") or {}).items()},
+                extras_offered=tuple(str(k) for k in (data.get("extras_offered") or ())),
+                started=float(data["started"]),
+                finished=(
+                    None if data.get("finished") is None
+                    else float(data["finished"])
+                ),
+                duration=_opt_int(data.get("duration")),
+            )
+        except (KeyError, TypeError, ValueError):
+            return None
+
+
+def _opt_int(value: Any) -> int | None:
+    """int or None; floats and non-numbers give None."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def wash_extras_label(record: WashRecord) -> str:
+    """State of the wash extras sensor: readable names joined, or "None".
+
+    Keys without a display name (e.g. from a tampered restore) fall back to
+    the raw key instead of raising.
+    """
+    names = [EXTRA_NAMES.get(name, name) for name, on in record.extras.items() if on]
+    return ", ".join(names) if names else "None"
+
+
+@dataclass
+class WashTracker:
+    """The none/running/finished/interrupted state machine of one washer.
+
+    Fed with every polled /State status and with every program context the
+    coordinator managed to read. The newest context that shows a selected
+    program is kept; it is consumed the moment a wash begins, so a context
+    can never be attributed to a later wash. The machine dropping to off/on
+    (Status 1/2) discards the context too: the selected program is gone.
+    """
+
+    record: WashRecord | None = None
+    context: ProgramContext | None = None
+
+    def note_context(self, context: ProgramContext | None) -> None:
+        """Keep the newest context that shows a selected program."""
+        if context is not None and context.prog_id:
+            self.context = context
+
+    def update(
+        self,
+        status: int,
+        *,
+        now: float,
+        state: dict[str, Any] | None = None,
+    ) -> WashRecord | None:
+        """Feed one poll; returns the record to expose (None before a wash).
+
+        *status* is the /State Status code, *now* the poll time in epoch
+        seconds, *state* the raw /State mapping (used for the ProgramID
+        fallback when no context was ever seen).
+        """
+        running = self.record is not None and self.record.state == WASH_RUNNING
+        if status in (1, 2):
+            # Off or on without a program: the selected program is gone, a
+            # kept context belongs to the past.
+            self.context = None
+        if status in (4, 5) and not running:
+            # Waiting to start or running with no open record: the wash
+            # begins. Freeze the kept context (or the /State fallback).
+            self.record = self._freeze(now=now, state=state)
+        elif running and status not in WASH_KEEP_RUNNING:
+            # The machine left running (and is not merely paused): close
+            # the record. Status 7 (finished) is unverified on a real
+            # machine; anything else that ends the run is "interrupted".
+            self._close(status=status, now=now)
+        return self.record
+
+    def _freeze(self, *, now: float, state: dict[str, Any] | None) -> WashRecord:
+        context = self.context
+        self.context = None  # consumed: never attributed to a later wash
+        if context is not None:
+            offered = {
+                name: extra.on for name, extra in context.extras.items()
+                if extra.offered
+            }
+            return WashRecord(
+                state=WASH_RUNNING,
+                program_id=context.prog_id,
+                program_name=program_name(context.prog_id),
+                temperature=context.temperature.current,
+                eco=context.temperature.info == 1,
+                spin_rpm=context.spin_rpm.current,
+                # A soiling current of 0 means the program offers no levels.
+                soiling=context.soiling.current or None,
+                extras=offered,
+                extras_offered=tuple(offered),
+                started=now,
+                finished=None,
+                duration=None,
+            )
+        # Started at the machine without the integration ever seeing a
+        # context: record what /State carries, mark the rest unknown.
+        program = None
+        if state is not None:
+            try:
+                program = int(state.get("ProgramID"))
+            except (TypeError, ValueError):
+                program = None
+            if program is not None and program <= 0:
+                program = None
+        return WashRecord(
+            state=WASH_RUNNING,
+            program_id=program,
+            program_name=program_name(program) if program is not None else None,
+            temperature=None,
+            eco=False,
+            spin_rpm=None,
+            soiling=None,
+            extras={},
+            extras_offered=(),
+            started=now,
+            finished=None,
+            duration=None,
+        )
+
+    def _close(self, *, status: int, now: float) -> None:
+        record = self.record
+        if record is None:
+            return
+        record.state = WASH_FINISHED if status == 7 else WASH_INTERRUPTED
+        record.finished = now
+        record.duration = max(0, int(round((now - record.started) / 60)))
 
 
 # Read/write callables the session expects from the cloud layer.
