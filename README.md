@@ -30,14 +30,16 @@ The official Miele integration can only send a program number. This one sets eve
 - **Every program your machine has, by name.** Cottons, Minimum iron, Delicates, Woollens, Express 20 and the rest, read from the machine itself.
 - **Temperature and spin speed**, eco temperatures included.
 - **The extras as switches:** Extra quiet, Soak, Extra gentle, Quick, Pre-wash, Water plus, Pre-ironing, AllergoWash, Intensive and more.
+- **Laundry liquid (TwinDos):** a TwinDos select with Off, Whites and Colours, and a Detergent switch: off washes without liquid, on brings back your last Whites or Colours choice.
 - **Only valid choices.** Pick Minimum iron and the 75 °C and 90 °C options are gone, just like in the app.
 - **Every change is read back** from the machine, so what you see is what it will wash.
 - **Start from Home Assistant**, with a button or from an automation.
 - **Status that always works:** what the machine is doing, time remaining, finish time, door, and whether it is armed.
 - **Live readings while it runs:** target temperature, current spin speed, elapsed time, the raw program phase number, and a delayed start time.
-- **A record of every wash:** program, temperature (with an eco flag), spin speed, soiling and every extra it ran with — separate sensors per detail, kept during the run and after it ends, surviving a Home Assistant restart. A wash started at the machine still records its program; details the integration never saw stay honestly unknown.
+- **A record of every wash:** program, temperature (with an eco flag), spin speed, soiling, laundry liquid and every extra it ran with — separate sensors per detail, kept during the run and after it ends, surviving a Home Assistant restart. A wash started at the machine still records its program; details the integration never saw stay honestly unknown.
 - **One binary sensor per wash extra** (Wash Soak, Wash Extra quiet, …): on when that extra was selected for the recorded wash, ready for charts and automations.
-- **One action for presets and automations:** program, temperature, spin and extras in a single call.
+- **One action for presets and automations:** program, temperature, spin, extras and laundry liquid in a single call.
+- **Measured power profiles** (with a power-measuring plug): every wash measured minute by minute, kept per program combination, so a template or planner knows what the next wash will draw, minute by minute.
 
 It runs next to the official Miele integration and does not interfere with it. Keep that one for its sensors and history; add this one for control.
 
@@ -57,6 +59,7 @@ Remote control has to be switched on once in the machine's settings.
 2. Install **Miele Mobile Control** and restart Home Assistant.
 3. Go to **Settings → Devices & services → Add integration** and pick **Miele Mobile Control**.
 4. Sign in with the e-mail and password of your Miele account, the one the app uses.
+5. Optional: when the washer is on a power-measuring plug, open **Settings → Devices & services → Miele Mobile Control → Configure** and pick the plug's power sensor (and, if it has one, its energy sensor). See [Measured power profiles](#measured-power-profiles).
 
 **Will it work for me?**
 
@@ -74,9 +77,11 @@ Your Miele e-mail and password are stored in Home Assistant, as with any account
 - The washer's status on top.
 - One-tap buttons for the programs you use most, with the full list below.
 - A row each for temperature, eco temperatures, spin speed and soiling.
+- A laundry liquid row: TwinDos Off, Whites or Colours in one tap, and the Detergent switch.
 - The extras as toggles, showing only those the selected program offers.
 - When the machine is not armed, the controls make way for a card that tells you what to do at the machine.
 - A Start tile that asks for confirmation first, and a preset button that loads a program without starting it.
+- A power profile card: what the selected combination drew the last times it ran (needs a measuring plug; without one it says so).
 
 Replace `wsi863` with your machine's model. The screenshot shows the view without the Start tile.
 
@@ -95,6 +100,18 @@ data:
   extras:                     # these go on, the others off
     - extra_quiet
     - soak
+```
+
+A dark wash without laundry liquid, for example with your own detergent for darks:
+
+```yaml
+action: miele_mobile_control.set_program
+target:
+  entity_id: select.wsi863_program
+data:
+  program: Cottons
+  temperature: 30
+  twindos: "off"              # off, whites or colours; quote "off" in YAML
 ```
 
 Add `start: true` and it also starts. A wash you armed in the morning that runs in the afternoon:
@@ -119,8 +136,21 @@ actions:
       start: true
 ```
 
+Or hand the start time to the washer itself with `start_at`. The washer shows the countdown and starts on its own timer, also when Home Assistant or your internet is down at that moment:
+
+```yaml
+actions:
+  - action: miele_mobile_control.set_program
+    target:
+      entity_id: select.wsi863_program
+    data:
+      program: Cottons
+      temperature: 20
+      start_at: "{{ today_at('14:30') }}"
+```
+
 > [!WARNING]
-> A start cannot be undone from Home Assistant. The machine begins washing and the arming is used up. To stop a running program, use the machine.
+> A start cannot be undone from Home Assistant, and neither can a `start_at`. The arming is used up; the machine begins washing, or waits and then begins. To stop a running program or cancel a countdown, use the machine.
 
 <details>
 <summary><b>More about the action</b></summary>
@@ -128,6 +158,7 @@ actions:
 - **Program first, options after.** Choosing a program resets temperature, spin and extras to that program's defaults. The washer does this and the Miele app behaves the same. The action takes care of the order for you.
 - **Extras:** use `extra_quiet`, `soak`, `gentle` (Extra gentle), `quick`, `single` (SingleWash), `water_plus`, `pre_wash`, `rinse_hold`, `steam_smoothing` (Pre-ironing), `allergo_wash`, `intensive`. The listed extras are switched on and the others the program lets you change are switched off, so a preset gives the same result every time.
 - **A value the program does not offer is refused**, with a message that names the value and lists what is offered. If the washer is already on that program, nothing is written. If the call also switches to a different program, the options can only be checked once the washer shows that program: the program is then changed, the options are not applied, and the error says so.
+- **Laundry liquid:** `twindos` takes `off`, `whites` or `colours`; `detergent: false` is the same as `twindos: off`, and `detergent: true` brings back the last Whites or Colours choice the integration saw on this washer (refused when it has seen none). Giving both with values that contradict each other, such as `detergent: true` with `twindos: off`, is refused. Either one is refused unless the washer lets both TwinDos containers be changed for the program. Like every option, the result is read back from the machine.
 - **Changes in quick succession** are applied one after another, so none is lost.
 - `program` takes a name or a program number. `eco: true` picks the eco variant of the given temperature.
 
@@ -143,10 +174,12 @@ One device per washing machine on your Miele account, named after its model.
 | **Program** | `select.<machine>_program` |
 | **Options** | `select.<machine>_temperature`, `_spin_speed`, `_soiling` |
 | **Extras** | one `switch.<machine>_…` per extra. Unavailable when the selected program does not offer it; the `offered` attribute lets a dashboard hide it. |
+| **Laundry liquid** | `select.<machine>_twindos` (Off / Whites / Colours; unknown when the machine shows a combination that was never measured), `switch.<machine>_detergent`. Both unavailable unless both TwinDos containers can be changed. Diagnostic: `sensor.<machine>_twindos_1_dosing`, `_twindos_2_dosing` (raw container values). |
 | **Status** | `sensor.<machine>_status`, `_remaining_time`, `_finish_time`; `binary_sensor.<machine>_mobile_start`, `_door`. These work whether or not the machine is armed. |
 | **Live (while running)** | `sensor.<machine>_target_temperature`, `_current_spin_speed`, `_elapsed_time`, `_program_phase` (raw number, diagnostic), `_start_time` (only with a delayed start). |
-| **Wash record** | `sensor.<machine>_wash_state` (`none`/`running`/`finished`/`interrupted`), `_wash_program`, `_wash_temperature` (°C, `eco` attribute), `_wash_spin_speed`, `_wash_soiling`, `_wash_extras` (names plus one boolean attribute per offered extra), `_wash_started`, `_wash_finished`, `_wash_duration`; one `binary_sensor.<machine>_wash_…` per extra. The record is frozen when the program begins and kept until the next wash replaces it; it survives a restart. |
+| **Wash record** | `sensor.<machine>_wash_state` (`none`/`running`/`finished`/`interrupted`), `_wash_program`, `_wash_temperature` (°C, `eco` attribute), `_wash_spin_speed`, `_wash_soiling`, `_wash_extras` (names plus one boolean attribute per offered extra, and `twindos` / `twindos_mode` for the laundry liquid), `_wash_started`, `_wash_finished`, `_wash_duration`; `binary_sensor.<machine>_wash_detergent` (on when the wash ran with laundry liquid); one `binary_sensor.<machine>_wash_…` per extra. The record is frozen when the program begins and kept until the next wash replaces it; it survives a restart. |
 | **Start** | `button.<machine>_start` |
+| **Power profiles** (only with a plug in the options) | `sensor.<machine>_wash_energy` (kWh of the wash being measured or the last one; `wh`, `minutes`, `missing_minutes`, `key` attributes), `_power_profile` (profile of the selected combination; state = stored runs), `_power_profiles` (the whole matrix), diagnostic `_power_plug`. See [Measured power profiles](#measured-power-profiles). |
 
 On a WSI863:
 
@@ -162,6 +195,8 @@ switch.wsi863_intensive          switch.wsi863_extra_rinse
 switch.wsi863_pre_rinse          switch.wsi863_microfibre
 switch.wsi863_eco                switch.wsi863_starch_hold
 switch.wsi863_hygiene_plus
+select.wsi863_twindos            switch.wsi863_detergent
+sensor.wsi863_twindos_1_dosing   sensor.wsi863_twindos_2_dosing
 sensor.wsi863_status             sensor.wsi863_remaining_time
 sensor.wsi863_finish_time        sensor.wsi863_start_time
 sensor.wsi863_target_temperature sensor.wsi863_current_spin_speed
@@ -173,6 +208,7 @@ sensor.wsi863_wash_started       sensor.wsi863_wash_finished
 sensor.wsi863_wash_duration
 binary_sensor.wsi863_mobile_start
 binary_sensor.wsi863_door
+binary_sensor.wsi863_wash_detergent
 binary_sensor.wsi863_wash_quick         binary_sensor.wsi863_wash_singlewash
 binary_sensor.wsi863_wash_water_plus    binary_sensor.wsi863_wash_extra_rinse
 binary_sensor.wsi863_wash_pre_wash      binary_sensor.wsi863_wash_soak
@@ -183,9 +219,46 @@ binary_sensor.wsi863_wash_allergowash   binary_sensor.wsi863_wash_eco
 binary_sensor.wsi863_wash_intensive     binary_sensor.wsi863_wash_starch_hold
 binary_sensor.wsi863_wash_hygiene_plus
 button.wsi863_start
+# only with a measuring plug:
+sensor.wsi863_wash_energy        sensor.wsi863_power_profile
+sensor.wsi863_power_profiles     sensor.wsi863_power_plug
 ```
 
 </details>
+
+## Measured Power Profiles
+
+With the washer on a power-measuring plug, the integration measures every wash minute by minute and remembers what each program combination draws. A planner or template can then read the expected per-minute usage of the next wash from the integration, built from your own previous runs.
+
+**What it needs.** A sensor with device class `power` (W) of the plug the washer is on, chosen under **Settings → Devices & services → Miele Mobile Control → Configure** (one plug per washing machine; leave it empty for none). Optionally the plug's `energy` sensor (kWh): the total of a wash then comes from that meter. Without a plug nothing is measured, stored or created.
+
+**What is measured.** Only while the washer really runs (paused counts, the clock keeps going); a delayed start's waiting time is not. Minute 0 is the moment the washer started running. Each minute holds the time-weighted mean power of that minute, stored as Wh (`W / 60`); the plug's last value holds until its next report. Time the plug reads unavailable is not counted, and a minute without any valid reading is stored as missing (`null`), never as 0.
+
+**What is stored.** A wash that ends finished, with at most 10 % missing minutes and a known combination, is added to the matrix; an interrupted wash is not. Per combination the 5 most recent runs are kept (start, minutes, per-minute Wh, kWh, missing minutes, meter or integrated). The matrix lives in Home Assistant's storage (`.storage/miele_mobile_control.<entry id>.profiles`) and survives restarts. A wash running during a restart keeps the minutes measured before it; only the downtime counts as missing.
+
+**The key.** One key per combination of everything that changes the power use:
+
+```
+<program>|<°C>|eco=<0/1>|<rpm>|soil=<1-3 or ->|<extras or none>
+Cottons|20|eco=0|1600|soil=2|none
+Cottons|40|eco=1|1400|soil=2|extra_quiet+gentle
+```
+
+Extras are the action's extra names, sorted, joined with `+`. Programs that share a name carry their number (`Denim (123)`). TwinDos / laundry liquid is not part of the key: it does not change the power use. A wash started at the machine without the integration seeing its settings has no key and is not stored.
+
+**Reading it.** `sensor.<machine>_power_profile` follows the combination selected on the armed washer, or the one of the wash while it waits or runs: state = stored runs (0 = never measured), attributes `key`, `wh` (list, one value per minute), `minutes`, `kwh`, `runs`, `last_run`. `sensor.<machine>_power_profiles` holds the whole matrix in its `profiles` attribute (`{key: {wh, minutes, kwh, runs, last_run}}`). The large attributes are kept out of the recorder.
+
+```yaml
+# Expected kWh of the selected combination, or nothing when never measured
+{{ state_attr('sensor.wsi863_power_profile', 'kwh') }}
+# Expected Wh in the first hour of a Cottons 40 °C wash
+{% set p = state_attr('sensor.wsi863_power_profiles', 'profiles')['Cottons|40|eco=0|1400|soil=2|none'] %}
+{{ p.wh[:60] | reject('none') | sum }}
+```
+
+**Removing a bad measurement.** `miele_mobile_control.forget_profile` with the washer as target removes a key; without `key` it removes the one `sensor.<machine>_power_profile` shows now.
+
+**Limitations.** The Status is polled every 30 seconds, so minute 0 can start up to 30 seconds after the washer did. The power before and after the wash is not measured. Runs of one combination differ in length; the profile uses the median length and averages each minute over the runs that have it.
 
 ## Good to Know
 
@@ -200,6 +273,7 @@ The official integration uses Miele's public 3rd Party API. For a washing machin
 | **Temperature** | No | Yes |
 | **Spin speed** | No | Yes |
 | **Extras** | No | Yes, one switch each |
+| **TwinDos laundry liquid** | No | Yes, Off / Whites / Colours |
 | **Knows what a program offers** | No | Yes, only valid choices are shown |
 | **Start** | Yes, when Mobile Start is armed | Yes, when Mobile Start is armed |
 | **Appliances** | All Miele@home appliances | Washing machines |
@@ -214,13 +288,15 @@ The official integration uses Miele's public 3rd Party API. For a washing machin
 
 - **Tested on one appliance:** WSI863, Wi-Fi module EK057, firmware 08.37.
 - **Washing machines only.** Dryers and washer-dryers are not listed.
-- **Start is new.** Starting from Home Assistant is implemented the way the app does it, but version 0.1.0 has not exercised it on a real machine yet. It is guarded: the machine's state is read fresh, a second start within 30 seconds is refused, a start is never retried automatically, and you get an error if the washer does not begin.
-- **No real wash has been observed end to end.** Only off, on and program selected were seen on the test machine. Everything from "waiting to start" onwards — the wash record, its finish and duration, the live readings of a running program — is covered by tests against captured data, not by a real run. Report what your machine shows.
+- **Start was exercised once, through the washer's timer.** One real wash was started with `start_at`: the washer waited on its own timer, started within the minute and ran to the end. An immediate start (the Start button, `start: true`) follows the app's calls but has not been sent to a real machine yet. Both are guarded: the machine's state is read fresh, a second start within 30 seconds is refused, a start is never retried automatically, and you get an error if the washer does not begin.
+- **One real wash has been observed end to end.** A Cottons 20 °C wash on the test machine: waiting to start, running, finished, with the wash record following each step. While it waits or runs, the washer accepts no changes and the controls show unavailable; Mobile Start reads on until the wash ends, then off. Other programs and an interrupted wash are covered by tests only.
 - **The wash record is honest about what it never saw.** It freezes the last program context read while Mobile Start was armed with a program selected. A wash started at the machine without the integration seeing a context records only the program (`/State` `ProgramID`); temperature, spin, soiling and extras stay unknown, never invented. Whether the program context can still be read while the washer waits to start or runs is untested, so the record deliberately does not depend on it.
-- **"Started" means armed and counting down.** `wash_started` is the moment the machine entered waiting-to-start or running, so it includes a delayed start. If waiting is cancelled at the machine, the record closes as interrupted.
-- **Some status values are untested.** Off, on, program selected, waiting and running were seen on the test machine. Paused, finished and failure follow Miele's public documentation; the wash record treats only Status 7 as "finished" and everything else that ends a run as "interrupted".
+- **The record opens when the washer is armed with a timer; the clock starts when it runs.** With a delayed start the wash record shows `running` from the moment the washer waits, but `wash_started` and `wash_duration` count from the moment it really runs. If waiting is cancelled at the machine, the record closes as interrupted.
+- **Some status values are untested.** Off, on, program selected, waiting, running and finished were seen on the test machine. Paused and failure follow Miele's public documentation; the wash record treats only Status 7 as "finished" and everything else that ends a run as "interrupted".
 - **European Miele service only, e-mail and password sign-in only.** Miele is moving countries to a newer sign-in (France was the first); accounts there cannot log in.
-- **Not there yet:** TwinDos dosing, stains, capsule dosing, delayed start.
+- **TwinDos was measured on one machine only.** The three combinations behind Off, Whites and Colours were measured on the test WSI863 with UltraPhase 1 and UltraPhase 2 in its two containers, by switching the setting in the Miele app and reading the machine. Other detergent configurations are untested: when your machine shows a combination that was never measured, the TwinDos select reads unknown and the raw dosing sensors show the values. The "no laundry detergent / fabric conditioner / additive" settings are not offered on the test machine and are not supported.
+- **Delayed start counts in whole minutes.** `start_at` is turned into minutes from now, the way the app does it, so the washer starts within a minute of the moment you gave. It is refused when the washer does not offer a delayed start for the selected program. A moment in the past starts at once.
+- **Not there yet:** stains, capsule dosing.
 - **Soiling shows as 1, 2, 3.** The names of the levels are not confirmed.
 - **No changes while the machine waits to start or runs.**
 - **Cloud only.** It needs internet and Miele's cloud. On the tested Wi-Fi module the local network offers no program control at all.
@@ -234,7 +310,7 @@ The official integration uses Miele's public 3rd Party API. For a washing machin
 - **Stored:** your Miele e-mail, password and country, in Home Assistant's own config storage, where every account-based integration keeps its sign-in. The session token lives in memory only.
 - **Sent:** only to Miele's cloud (`rest-eu.domestic.miele-iot.com`): sign-in, reading the machine, writing the selection. This is what the app sends.
 - **No telemetry.** Nothing is reported to the author or anyone else.
-- **Never starts by itself.** A start happens only when you press the button or call the action with `start: true`.
+- **Never starts by itself.** A start happens only when you press the button or call the action with `start: true` or `start_at`.
 - **Undocumented API.** Miele can change or block it at any time. Use at your own risk.
 - Not affiliated with or endorsed by Miele. See [SECURITY.md](SECURITY.md) to report a problem.
 
@@ -287,7 +363,9 @@ python3 -m pip install pytest aiohttp
 python3 -m pytest
 ```
 
-The tests need Python 3.13 or newer, not Home Assistant. `dop2.py` reads and writes the binary format and `washer.py` holds the washer logic; both are plain Python. `tests/fixtures/wsi863.json` holds objects captured from a real machine, including a write the machine accepted, which the encoder must reproduce byte for byte.
+The tests need Python 3.13 or newer, not Home Assistant. `dop2.py` reads and writes the binary format and `washer.py` holds the washer logic; both are plain Python. `tests/fixtures/wsi863.json` holds objects captured from a real machine, including a write the machine accepted, which the encoder must reproduce byte for byte. `profile.py` (the measured power profiles) is plain Python too; `tests/fixtures/socket_power_first_wash.csv` is a real plug recording of a wash.
+
+`tests_ha/` holds tests that run inside a real Home Assistant (options flow, the entities with and without a plug, storage across a reload). They need `homeassistant` and `pytest-homeassistant-custom-component`: `python3 -m pytest -c tests_ha/pytest.ini tests_ha`.
 
 </details>
 

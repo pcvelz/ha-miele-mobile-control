@@ -3,7 +3,8 @@
 # A sections view with one row per topic, using only stock cards. It is the
 # published twin of the live "Miele Mobile Control" dashboard: identical,
 # except that this file additionally contains the Start tile (guarded by a
-# confirmation dialog on every tap path) and a set_program preset button. Add
+# confirmation dialog on every tap path), a set_program preset button and the
+# power profile card (needs a measuring plug in the options). Add
 # it as a new dashboard: Settings -> Dashboards -> Add dashboard -> New
 # section from scratch -> Edit -> raw configuration, and paste the YAML below
 # (from "type: sections" down).
@@ -75,6 +76,42 @@ sections:
               washing and this cannot be undone from Home Assistant.
         hold_action:
           action: none
+  # Measured power profile of the selected combination (or of the wash while
+  # it waits or runs), read from the integration. Needs a measuring plug in
+  # the integration's options; without one the card says so (the profile
+  # sensors then do not exist and read "unknown").
+  - type: grid
+    cards:
+      - type: heading
+        heading: Power profile
+      - type: markdown
+        content: >-
+          {% set e = 'sensor.wsi863_power_profile' %}
+          {% set key = state_attr(e, 'key') %}
+          {% if states(e) in ['unknown', 'unavailable'] %}
+          No measuring plug configured: choose one under Settings → Devices &
+          services → Miele Mobile Control → Configure.
+          {% elif key is none %}
+          Select a program to see what it draws.
+          {% else %}
+          {% set p = key.split('|') %}
+          {% set temp = 'cold' if p[1] == '0' else p[1] ~ ' °C' %}
+          {% set name = p[0] ~ ' ' ~ temp ~ (' Eco' if p[2] == 'eco=1' else '') %}
+          {% if states(e) | int(0) == 0 %}
+          **{{ name }}** · never measured with these settings; the next
+          finished wash will be.
+          {% else %}
+          {% set m = state_attr(e, 'minutes') | int(0) %}
+          **{{ name }}** · {{ '%.2f' | format(state_attr(e, 'kwh') | float(0)) }} kWh
+          · {{ m // 60 }} h {{ '%02d' | format(m % 60) }}
+          · from {{ states(e) }} runs
+          {% endif %}
+          {% endif %}
+          {% set w = 'sensor.wsi863_wash_energy' %}
+          {% if state_attr(w, 'measuring') %}
+
+          Measuring now: {{ states(w) }} kWh after {{ state_attr(w, 'minutes') }} min.
+          {% endif %}
   # Shown only while Mobile Start is not armed at the machine. Arming must be
   # repeated for every wash, so this explains the dial sequence instead of
   # showing a wall of Unavailable controls.
@@ -249,6 +286,33 @@ sections:
         features:
           - type: select-options
             style: buttons
+  - type: grid
+    visibility:
+      - condition: state
+        entity: binary_sensor.wsi863_mobile_start
+        state: "on"
+    cards:
+      - type: heading
+        heading: Laundry liquid
+      # TwinDos: one-tap Off / Whites / Colours, plus the on/off switch (on
+      # restores the last Whites or Colours choice). Both are unavailable
+      # when the program does not let both containers be changed.
+      - type: tile
+        entity: select.wsi863_twindos
+        name: TwinDos
+        grid_options:
+          columns: 12
+        features:
+          - type: select-options
+            style: buttons
+      - type: tile
+        entity: switch.wsi863_detergent
+        name: Laundry liquid
+        grid_options:
+          columns: 12
+        features_position: inline
+        features:
+          - type: toggle
   - type: grid
     visibility:
       - condition: state

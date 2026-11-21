@@ -23,9 +23,11 @@ from homeassistant.components.sensor import (
     RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
+    SensorStateClass,
 )
 from homeassistant.const import (
     REVOLUTIONS_PER_MINUTE,
+    UnitOfEnergy,
     UnitOfTemperature,
     UnitOfTime,
 )
@@ -35,7 +37,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.restore_state import ExtraStoredData, RestoredExtraData
 from homeassistant.util import dt as dt_util
 
-from . import washer
+from . import profile, washer
 from .const import (
     STATUS_STATES,
     elapsed_minutes,
@@ -48,7 +50,7 @@ from .const import (
     target_temperature,
 )
 from .coordinator import MieleConfigEntry, MieleCoordinator, WasherData
-from .entity import MieleStateEntity, async_track_washers
+from .entity import MieleEntity, MieleStateEntity, async_track_washers
 
 
 async def async_setup_entry(
@@ -79,8 +81,26 @@ async def async_setup_entry(
             MieleWashStartedSensor(coordinator, washer),
             MieleWashFinishedSensor(coordinator, washer),
             MieleWashDurationSensor(coordinator, washer),
+            MieleTwinDosDosingSensor(coordinator, washer, 1),
+            MieleTwinDosDosingSensor(coordinator, washer, 2),
+            *_profile_sensors(coordinator, washer),
         ],
     )
+
+
+def _profile_sensors(coordinator: MieleCoordinator, washer: WasherData) -> list:
+    """The measured-power entities; none for a washer without a plug."""
+    plugs = coordinator.profiles.plugs if coordinator.profiles is not None else {}
+    classes = {
+        "wash_energy": MieleWashEnergySensor,
+        "power_profile": MielePowerProfileSensor,
+        "power_profiles": MielePowerProfilesSensor,
+        "power_plug": MielePowerPlugSensor,
+    }
+    return [
+        classes[key](coordinator, washer, key)
+        for key in profile.profile_entity_keys(plugs, washer.fab)
+    ]
 
 
 class MieleStatusSensor(MieleStateEntity, SensorEntity):
@@ -225,6 +245,45 @@ class MieleStartTimeSensor(MieleStateEntity, SensorEntity):
 
 
 # ---------- the wash record ----------
+
+
+class MieleTwinDosDosingSensor(MieleEntity, SensorEntity):
+    """Raw current value of one TwinDos container (diagnostic).
+
+    The pair of values forms a TwinDos pattern (washer.TWINDOS_PATTERNS,
+    measured on one machine); these sensors show the values raw so another
+    detergent configuration can be recognised. Available whenever the
+    program context is.
+    """
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:cup-outline"
+
+    def __init__(
+        self, coordinator: MieleCoordinator, washer: WasherData, index: int
+    ) -> None:
+        super().__init__(coordinator, washer, f"twindos_{index}_dosing")
+        self._index = index  # 1-based container number
+        self._attr_translation_key = f"twindos_{index}_dosing"
+
+    @property
+    def available(self) -> bool:
+        if not self._coordinator_up:
+            return False
+        washer = self.washer
+        return washer is not None and washer.context is not None
+
+    @property
+    def native_value(self) -> int | None:
+        washer = self.washer
+        if (
+            washer is None
+            or washer.context is None
+            or washer.context.dosing is None
+            or self._index > len(washer.context.dosing.containers)
+        ):
+            return None
+        return washer.context.dosing.containers[self._index - 1].current
 
 
 class MieleWashRecordSensor(MieleStateEntity, RestoreSensor):
@@ -391,6 +450,8 @@ class MieleWashExtrasSensor(MieleWashRecordSensor):
         }
         for name in record.extras_offered:
             attributes[name] = bool(record.extras.get(name))
+        attributes["twindos"] = list(record.twindos)
+        attributes["twindos_mode"] = record.twindos_mode
         return attributes
 
     async def async_added_to_hass(self) -> None:
@@ -449,3 +510,139 @@ class MieleWashDurationSensor(MieleWashRecordSensor):
 
     def _record_value(self, record: washer.WashRecord) -> int | None:
         return record.duration
+
+
+# ---------- measured power profiles (only with a plug in the options) ----------
+
+
+class MieleProfileEntity(MieleEntity, SensorEntity):
+    """Base of the profile sensors: local data, available while loaded."""
+
+    def __init__(
+        self, coordinator: MieleCoordinator, washer: WasherData, key: str
+    ) -> None:
+        super().__init__(coordinator, washer, key)
+        self._attr_translation_key = key
+
+    @property
+    def profiles(self) -> Any:
+        return self.coordinator.profiles
+
+    @property
+    def available(self) -> bool:
+        return self.profiles is not None
+
+
+class MieleWashEnergySensor(MieleProfileEntity):
+    """kWh of the wash being measured, or of the last measured wash.
+
+    The per-minute detail rides along as attributes (wh, minutes,
+    missing_minutes, key) instead of a separate wash_power sensor: it has no
+    natural state of its own and belongs to exactly this wash.
+    """
+
+    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_state_class = SensorStateClass.TOTAL
+    _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
+    _attr_suggested_display_precision = 3
+    _unrecorded_attributes = frozenset({"wh"})
+
+    def _run(self) -> tuple[Any, bool]:
+        if self.profiles is None:
+            return None, False
+        return self.profiles.current_run(self.fab)
+
+    @property
+    def native_value(self) -> float | None:
+        run, _ = self._run()
+        return run.kwh if run is not None else None
+
+    @property
+    def last_reset(self) -> datetime | None:
+        run, _ = self._run()
+        return dt_util.utc_from_timestamp(run.started) if run is not None else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        run, measuring = self._run()
+        if run is None:
+            return {}
+        return {
+            "key": run.key,
+            "minutes": run.minutes,
+            "missing_minutes": run.missing,
+            "wh": run.wh,
+            "from_energy_sensor": run.from_meter,
+            "measuring": measuring,
+            "stored": (not measuring) and run.storable,
+        }
+
+
+class MielePowerProfileSensor(MieleProfileEntity):
+    """Profile of the combination selected now (or of the running wash).
+
+    State = number of stored runs for that key (0 = never measured).
+    """
+
+    _attr_icon = "mdi:chart-bell-curve"
+    _attr_native_unit_of_measurement = "runs"
+    _unrecorded_attributes = frozenset({"wh"})
+
+    @property
+    def native_value(self) -> int | None:
+        if self.profiles is None:
+            return None
+        found = self.profiles.data.matrix.profile(self.profiles.current_key(self.fab))
+        return found["runs"] if found else 0
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if self.profiles is None:
+            return {}
+        key = self.profiles.current_key(self.fab)
+        found = self.profiles.data.matrix.profile(key) or {}
+        return {
+            "key": key,
+            "wh": found.get("wh", []),
+            "minutes": found.get("minutes"),
+            "kwh": found.get("kwh"),
+            "runs": found.get("runs", 0),
+            "last_run": found.get("last_run"),
+        }
+
+
+class MielePowerProfilesSensor(MieleProfileEntity):
+    """The whole matrix for templates; state = number of keys."""
+
+    _attr_icon = "mdi:table"
+    _attr_native_unit_of_measurement = "profiles"
+    _unrecorded_attributes = frozenset({"profiles"})
+
+    @property
+    def native_value(self) -> int | None:
+        if self.profiles is None:
+            return None
+        return len(self.profiles.data.matrix.runs)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if self.profiles is None:
+            return {}
+        return {"profiles": self.profiles.data.matrix.profiles()}
+
+
+class MielePowerPlugSensor(MieleProfileEntity):
+    """Diagnostic: the power sensor measuring this washer."""
+
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_icon = "mdi:power-plug-outline"
+
+    @property
+    def native_value(self) -> str | None:
+        plug = self.profiles.plugs.get(self.fab) if self.profiles else None
+        return plug.power_sensor if plug else None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        plug = self.profiles.plugs.get(self.fab) if self.profiles else None
+        return {"energy_sensor": plug.energy_sensor if plug else None}

@@ -1,4 +1,4 @@
-"""Selects: program, temperature, spin speed, soiling."""
+"""Selects: program, temperature, spin speed, soiling, TwinDos."""
 
 from __future__ import annotations
 
@@ -10,10 +10,14 @@ from . import const
 from .coordinator import MieleConfigEntry, MieleCoordinator, WasherData
 from .entity import MieleEntity, async_track_washers
 from .washer import (
+    TWINDOS_PATTERNS,
     ProgramContext,
+    dosing_values,
     program_label,
     spin_label,
     temperature_label,
+    twindos_mode,
+    twindos_writable,
 )
 
 
@@ -37,6 +41,7 @@ async def async_setup_entry(
             MieleTemperatureSelect(coordinator, washer),
             MieleSpinSpeedSelect(coordinator, washer),
             MieleSoilingSelect(coordinator, washer),
+            MieleTwinDosSelect(coordinator, washer),
         ],
     )
 
@@ -237,3 +242,46 @@ class MieleSoilingSelect(MieleSelect):
         await self.coordinator.async_set_parameters(
             washer.fab, soiling=int(option)
         )
+
+
+# Option label per TwinDos pattern name, in TWINDOS_PATTERNS order.
+TWINDOS_LABELS: dict[str, str] = {
+    "off": "Off",
+    "whites": "Whites",
+    "colours": "Colours",
+}
+
+
+class MieleTwinDosSelect(MieleSelect):
+    """Choose the TwinDos laundry liquid pattern: Off, Whites or Colours.
+
+    The current option is the measured pattern matching the washer's
+    container values; unknown when none matches (never guessed). Available
+    only while both TwinDos containers can be changed.
+    """
+
+    _attr_translation_key = "twindos"
+    _attr_options = [TWINDOS_LABELS[name] for name in TWINDOS_PATTERNS]
+
+    def __init__(self, coordinator: MieleCoordinator, washer: WasherData) -> None:
+        super().__init__(coordinator, washer, "twindos")
+
+    def _writable(self) -> bool:
+        context = self.context
+        return context is not None and twindos_writable(context.dosing)
+
+    @property
+    def current_option(self) -> str | None:
+        context = self.context
+        if context is None or context.dosing is None:
+            return None
+        return TWINDOS_LABELS.get(twindos_mode(dosing_values(context.dosing)))
+
+    async def async_select_option(self, option: str) -> None:
+        washer = self.washer
+        if washer is None:
+            return
+        for name, label in TWINDOS_LABELS.items():
+            if label == option:
+                await self.coordinator.async_set_parameters(washer.fab, twindos=name)
+                return

@@ -1,4 +1,4 @@
-"""Switches: one per extra option of the selected program."""
+"""Switches: one per extra option of the selected program, plus TwinDos."""
 
 from __future__ import annotations
 
@@ -10,7 +10,15 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import MieleConfigEntry, MieleCoordinator, WasherData
 from .entity import MieleEntity, async_track_washers
-from .washer import EXTRAS, Extra
+from .washer import (
+    EXTRAS,
+    Dosing,
+    Extra,
+    detergent_from_mode,
+    dosing_values,
+    twindos_mode,
+    twindos_writable,
+)
 
 
 async def async_setup_entry(
@@ -24,7 +32,8 @@ async def async_setup_entry(
         entry,
         async_add_entities,
         lambda washer: [
-            MieleExtraSwitch(coordinator, washer, name) for name in EXTRAS
+            MieleDetergentSwitch(coordinator, washer),
+            *[MieleExtraSwitch(coordinator, washer, name) for name in EXTRAS],
         ],
     )
 
@@ -86,3 +95,62 @@ class MieleExtraSwitch(MieleEntity, SwitchEntity):
         await self.coordinator.async_set_parameters(
             washer.fab, extras={self._extra_name: on}
         )
+
+
+class MieleDetergentSwitch(MieleEntity, SwitchEntity):
+    """TwinDos laundry liquid on or off for the selected program: off washes
+    without liquid (the measured OFF pattern), on restores the last non-off
+    TwinDos pattern seen for this washer.
+
+    Unavailable unless the washer reports exactly two changeable TwinDos
+    containers — a pattern is only written when both can be changed. The
+    ``twindos`` attribute exposes the raw container values; the TwinDos
+    select offers the measured patterns by name.
+    """
+
+    _attr_translation_key = "detergent"
+
+    def __init__(self, coordinator: MieleCoordinator, washer: WasherData) -> None:
+        super().__init__(coordinator, washer, "detergent")
+
+    @property
+    def _dosing(self) -> Dosing | None:
+        """The dosing block of the selected program's context, if any."""
+        washer = self.washer
+        if washer is None or washer.context is None:
+            return None
+        return washer.context.dosing
+
+    @property
+    def available(self) -> bool:
+        if not super().available:
+            return False
+        return twindos_writable(self._dosing)
+
+    @property
+    def is_on(self) -> bool | None:
+        dosing = self._dosing
+        if dosing is None:
+            return None
+        # An unknown pattern is unknown, not "off".
+        return detergent_from_mode(twindos_mode(dosing_values(dosing)))
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        dosing = self._dosing
+        if dosing is None:
+            return {}
+        values = [c.current for c in dosing.containers]
+        return {"twindos": values, "twindos_mode": twindos_mode(values)}
+
+    async def async_turn_on(self, **kwargs) -> None:
+        await self._async_set(True)
+
+    async def async_turn_off(self, **kwargs) -> None:
+        await self._async_set(False)
+
+    async def _async_set(self, on: bool) -> None:
+        washer = self.washer
+        if washer is None:
+            return
+        await self.coordinator.async_set_parameters(washer.fab, detergent=on)

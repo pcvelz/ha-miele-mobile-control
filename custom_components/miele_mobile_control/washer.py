@@ -36,6 +36,10 @@ LEAF_PROGRAM_SELECT = (2, 1577)  # idx 0/0: what is written
 LEAF_USER_REQUEST = (2, 1583)  # idx 0/0: start = request id 1
 
 USER_REQUEST_START = 1
+# Start at the delay written to 2/1577 first (koti Laundry::DelayedStart).
+USER_REQUEST_START_DELAYED = 8
+# delayed_start_mode bits that count the delay in whole minutes from now.
+DELAY_MODES_MINUTES = (1, 32)
 
 # Device states from /State in which the DOP2 program context exists.
 ACTIVE_STATES = (2, 3, 4)
@@ -247,6 +251,71 @@ class Extra:
 
 
 @dataclass
+class ContainerDosing:
+    """Auto dosing of one TwinDos container (2/1574 field 15/1 element).
+
+    The fields follow koti's GlobalGenericParameterBitmaskU8: mask is the
+    request mask (bit 0 = the value can be changed), supported the bits the
+    program supports, current the container's raw value and info a status
+    code. The two containers' current values together form a TwinDos
+    pattern; see TWINDOS_PATTERNS.
+    """
+
+    mask: int
+    supported: int
+    current: int
+    info: int
+
+    @property
+    def changeable(self) -> bool:
+        return bool(self.mask & 1)
+
+
+@dataclass
+class NoDosing:
+    """One of the "no laundry detergent / fabric conditioner / additive"
+    flags of the dosing block (2/1574 field 15, members 2-4)."""
+
+    mask: int
+    on: bool
+    info: int
+
+    @property
+    def offered(self) -> bool:
+        return self.mask != 0
+
+    @property
+    def changeable(self) -> bool:
+        return bool(self.mask & 1)
+
+
+# Meaning of the not_adjustable_info codes of the dosing block
+# (2/1574 field 15/5, koti GlobalAutoDosingWM_NotAdjustableInfo).
+NOT_ADJUSTABLE_INFO: dict[int, str] = {
+    1: "container is not configured",
+    2: "detergent is not suitable",
+    3: "container is not available",
+    4: "container is empty",
+}
+
+
+@dataclass
+class Dosing:
+    """The auto dosing (TwinDos) block of the selected program: 2/1574
+    field 15, root field 3 (context_para_wm)."""
+
+    containers: list[ContainerDosing]  # one per TwinDos container
+    no_laundry_detergent: NoDosing
+    no_fabric_conditioner: NoDosing
+    no_additive: NoDosing
+    not_adjustable_info: list[int]  # codes from NOT_ADJUSTABLE_INFO
+
+    @property
+    def changeable_containers(self) -> list[ContainerDosing]:
+        return [c for c in self.containers if c.changeable]
+
+
+@dataclass
 class ProgramContext:
     """Parsed 2/1574 program context of the selected program."""
 
@@ -255,6 +324,7 @@ class ProgramContext:
     spin_rpm: Choice
     soiling: Choice
     extras: dict[str, Extra]
+    dosing: Dosing | None = None  # TwinDos block; None when the machine sends none
 
 
 def mobile_start_armed(state: dict[str, Any]) -> bool:
@@ -273,6 +343,36 @@ def _choice(para: dict[int, list[Any]], member: int) -> Choice:
     m = para[member][1]
     options = m[4][1] if m[4][0] in (0x11, 0x12) else m[5][1]
     return Choice(mask=m[1][1], current=m[2][1], options=list(options))
+
+
+def _dosing(para: dict[int, list[Any]]) -> Dosing | None:
+    """The TwinDos auto dosing block (field 15), None when absent or odd.
+
+    Parsed defensively: a machine without TwinDos (or with a differently
+    shaped block) must not lose the whole program context — every other
+    control still works without dosing.
+    """
+
+    def _no_dosing(block: dict[int, list[Any]], member: int) -> NoDosing:
+        m = block[member][1]
+        return NoDosing(mask=m[1][1], on=m[2][1], info=m[3][1])
+
+    try:
+        block = para[15][1]
+        return Dosing(
+            containers=[
+                ContainerDosing(
+                    mask=c[1][1], supported=c[2][1], current=c[3][1], info=c[4][1]
+                )
+                for c in block[1][1]
+            ],
+            no_laundry_detergent=_no_dosing(block, 2),
+            no_fabric_conditioner=_no_dosing(block, 3),
+            no_additive=_no_dosing(block, 4),
+            not_adjustable_info=list(block[5][1]),
+        )
+    except (KeyError, IndexError, TypeError):
+        return None
 
 
 def parse_context(fields: dict[int, list[Any]]) -> ProgramContext:
@@ -305,7 +405,122 @@ def parse_context(fields: dict[int, list[Any]]) -> ProgramContext:
             for name, i in EXTRAS.items()
             if i in para[16][1]
         },
+        dosing=_dosing(para),
     )
+
+
+# ---------- TwinDos dosing ----------
+#
+# TwinDos container value patterns, MEASURED on a WSI863 (Wi-Fi module
+# EK057, firmware 08.37) with UltraPhase 1 in container 1 and UltraPhase 2
+# in container 2: the setting was switched in the Miele app and 2/1574 was
+# read before and after each change. Other detergent configurations
+# (different cartridges, machines without TwinDos) are untested.
+TWINDOS_PATTERNS: dict[str, tuple[int, int]] = {
+    "off": (0, 0),
+    "whites": (1, 0),  # app: "Wit"
+    "colours": (0, 2),  # app: "Bont"
+}
+
+# State of the TwinDos select when the washer's container values match no
+# known pattern; never guessed.
+TWINDOS_UNKNOWN = "unknown"
+
+
+def twindos_mode(values: list[int]) -> str:
+    """The TwinDos pattern name for raw container values: one of
+    TWINDOS_PATTERNS, or TWINDOS_UNKNOWN when nothing measured matches
+    (e.g. another detergent configuration)."""
+    for name, pattern in TWINDOS_PATTERNS.items():
+        if tuple(values) == pattern:
+            return name
+    return TWINDOS_UNKNOWN
+
+
+def detergent_from_mode(mode: str | None) -> bool | None:
+    """Laundry liquid on/off for a TwinDos pattern name: False for "off",
+    True for a dosing pattern, None for unknown (never guessed)."""
+    if mode == "off":
+        return False
+    if mode in TWINDOS_PATTERNS:
+        return True
+    return None
+
+
+def dosing_values(dosing: Dosing | None) -> list[int]:
+    """Raw current values of the TwinDos containers, in container order."""
+    return [c.current for c in dosing.containers] if dosing is not None else []
+
+
+def twindos_writable(dosing: Dosing | None) -> bool:
+    """A pattern is only written when the washer reports exactly two
+    containers and both can be changed."""
+    return (
+        dosing is not None
+        and len(dosing.containers) == 2
+        and len(dosing.changeable_containers) == 2
+    )
+
+
+def detergent_refusal(dosing: Dosing | None) -> str:
+    """Why TwinDos dosing cannot be changed for this program.
+
+    A pattern is only written when the washer reports exactly two containers
+    and both can be changed; the not_adjustable_info reason(s) are named
+    when the machine gives any.
+    """
+    reasons = [
+        NOT_ADJUSTABLE_INFO[i]
+        for i in (dosing.not_adjustable_info if dosing else [])
+        if i in NOT_ADJUSTABLE_INFO
+    ]
+    detail = f" ({', '.join(reasons)})" if reasons else ""
+    return (
+        "TwinDos dosing is not changeable for this program; it needs two "
+        "changeable containers" + detail
+    )
+
+
+TWINDOS_RESTORE_REFUSAL = (
+    "laundry liquid cannot be switched on: no TwinDos dosing (Whites or "
+    "Colours) has been seen for this washer yet; choose it with the TwinDos "
+    "select, the twindos field of set_program, or once in the Miele app"
+)
+
+
+def _require_changeable_dosing(ctx: ProgramContext, requested: bool) -> None:
+    """Raise NotOfferedError when a TwinDos write was requested but the
+    program does not offer exactly two changeable containers."""
+    if not requested:
+        return
+    if not twindos_writable(ctx.dosing):
+        raise NotOfferedError(detergent_refusal(ctx.dosing))
+
+
+def twindos_target(
+    *,
+    detergent: bool | None,
+    twindos: str | None,
+    last_on: list[int] | None,
+) -> tuple[int, int] | None:
+    """The whole TwinDos pattern to write, or None for "leave as is".
+
+    *twindos* names a pattern; *detergent* False is the off pattern; True
+    restores *last_on* (the last Whites/Colours values seen for this washer)
+    and raises NotOfferedError(TWINDOS_RESTORE_REFUSAL) when none is known.
+    """
+    if twindos is not None:
+        if twindos not in TWINDOS_PATTERNS:
+            raise ValueError(f"unknown twindos pattern: {twindos!r}")
+        return TWINDOS_PATTERNS[twindos]
+    if detergent is None:
+        return None
+    if not detergent:
+        return TWINDOS_PATTERNS["off"]
+    mode = twindos_mode(list(last_on or []))
+    if detergent_from_mode(mode) is not True:
+        raise NotOfferedError(TWINDOS_RESTORE_REFUSAL)
+    return TWINDOS_PATTERNS[mode]
 
 
 def temperature_label(value: int, info: int) -> str:
@@ -330,6 +545,8 @@ def validate_parameters(
     spin_rpm: int | None = None,
     soiling: int | None = None,
     extras: dict[str, bool] | None = None,
+    detergent: bool | None = None,
+    twindos: str | None = None,
 ) -> None:
     """Raise NotOfferedError for any value the program does not offer.
 
@@ -399,6 +616,7 @@ def validate_parameters(
                 f"option {name!r} is locked for this program and cannot be "
                 f"changed; offered: {offered}"
             )
+    _require_changeable_dosing(ctx, detergent is not None or twindos is not None)
 
 
 def build_parameters(
@@ -410,16 +628,32 @@ def build_parameters(
     spin_rpm: int | None = None,
     soiling: int | None = None,
     extras: dict[str, bool] | None = None,
+    detergent: bool | None = None,
+    twindos: str | None = None,
+    dosing_defaults: list[int] | None = None,
 ) -> dict[int, list[Any]]:
     """2/1577 with 2/1574's current values plus the user's changes.
 
     *sel_fields* is a fresh decode of 2/1577 (it is modified in place and
     returned). With no keyword arguments it copies the appliance values only,
     which is how a program's defaults are written.
+
+    TwinDos writes (all refused unless the washer reports exactly two
+    changeable containers):
+
+    * *twindos* ("off"/"whites"/"colours") writes that measured pattern;
+    * *detergent* False writes the OFF pattern; True restores
+      *dosing_defaults* — the last non-off container values seen for this
+      washer, remembered by the coordinator — and refuses with
+      TWINDOS_RESTORE_REFUSAL when none is known (the washer was on Off
+      when the program was selected);
+    * None leaves the washer's container values untouched, exactly like the
+      other options.
     """
     ctx = parse_context(ctx_fields)
     if not ctx.prog_id:
         raise NoProgramError("the appliance shows no program to set")
+    _require_changeable_dosing(ctx, detergent is not None or twindos is not None)
 
     para_ctx = ctx_fields[3][1]
     sel_fields[1][1] = ctx.prog_id
@@ -456,6 +690,19 @@ def build_parameters(
         para[13][1][1][1] = [
             current[i] if i < len(current) else cont[i] for i in range(len(cont))
         ]
+    target = twindos_target(
+        detergent=detergent, twindos=twindos, last_on=dosing_defaults
+    )
+    if target is not None:
+        # The whole pattern or nothing: 2/1577 must carry exactly two
+        # container slots, otherwise the write is refused.
+        try:
+            slots = para[13][1][1][1]
+        except (KeyError, IndexError, TypeError):
+            slots = None
+        if not isinstance(slots, list) or len(slots) != 2:
+            raise NotOfferedError(detergent_refusal(ctx.dosing))
+        para[13][1][1][1] = list(target)
 
     if temperature is not None:
         para[3][1] = temperature
@@ -490,6 +737,53 @@ def build_start_request(fields: dict[int, list[Any]]) -> dict[int, list[Any]]:
     return fields
 
 
+def delay_minutes(target: float, now: float) -> int:
+    """Whole minutes from *now* to *target* (epoch seconds) as the app counts
+    them: from a minute ago, so 90 minutes ahead gives 91; 0 once passed."""
+    if target <= now:
+        return 0
+    return int((target - now + 60) // 60)
+
+
+def build_delayed_start(
+    sel_fields: dict[int, list[Any]],
+    ctx_fields: dict[int, list[Any]],
+    minutes: int,
+) -> dict[int, list[Any]]:
+    """2/1577 with the washer's current values plus the delay until start.
+
+    The delay goes into selection member 1 and its mode into member 2: the
+    first minutes mode (1, then 32) the washer shows as current or supported
+    in 2/1574. Refused when the washer offers no minutes mode or does not
+    allow the delay to be changed. User request 8 then arms the timer.
+    """
+    if minutes < 1:
+        raise NotOfferedError("a delayed start needs a start time in the future")
+    built = build_parameters(sel_fields, ctx_fields)
+    para_ctx = ctx_fields[3][1]
+    try:
+        changeable = bool(para_ctx[1][1][1][1] & 1)
+        shown = para_ctx[2][1]
+        modes = int(shown[2][1]) | int(shown[3][1])
+    except (KeyError, IndexError, TypeError):
+        changeable, modes = False, 0
+    mode = next((m for m in DELAY_MODES_MINUTES if modes & m), None)
+    para = built[6][1]
+    if not changeable or mode is None or 1 not in para or 2 not in para:
+        raise NotOfferedError(
+            "this washer does not offer a delayed start for the selected program"
+        )
+    para[1][1] = minutes
+    para[2][1] = mode
+    return built
+
+
+def build_delayed_start_request(fields: dict[int, list[Any]]) -> dict[int, list[Any]]:
+    """Fields of 2/1583 that send user request 8 (start at the set delay)."""
+    fields[1][1] = USER_REQUEST_START_DELAYED
+    return fields
+
+
 def start_allowed(state: dict[str, Any]) -> bool:
     """Whether the app would offer start: Status 3 (programmed) under Mobile
     Start (koti Laundry::Rules#programmed?)."""
@@ -521,7 +815,9 @@ class WashRecord:
     None (or empty) — values are never invented.
 
     *started* and *finished* are UTC epoch seconds from the poll clock;
-    *duration* is whole minutes and is set when the record closes.
+    *duration* is whole minutes and is set when the record closes. A wash
+    that waits on the washer's timer opens the record at once; *started*
+    moves to the moment the washer really runs, so the waiting is not counted.
     """
 
     state: str  # WASH_RUNNING / WASH_FINISHED / WASH_INTERRUPTED
@@ -536,6 +832,14 @@ class WashRecord:
     started: float
     finished: float | None
     duration: int | None
+    twindos: list[int] = field(default_factory=list)  # raw container values; empty = not seen
+    detergent: bool | None = None  # laundry liquid on/off; None = unknown
+    waiting: bool = False  # still on the washer's timer; *started* moves to the real start
+
+    @property
+    def twindos_mode(self) -> str:
+        """off / whites / colours, or unknown (also when never seen)."""
+        return twindos_mode(self.twindos) if self.twindos else TWINDOS_UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe copy for RestoreEntity storage."""
@@ -547,19 +851,27 @@ class WashRecord:
             "eco": self.eco,
             "spin_rpm": self.spin_rpm,
             "soiling": self.soiling,
+            "twindos": list(self.twindos),
+            "detergent": self.detergent,
             "extras": dict(self.extras),
             "extras_offered": list(self.extras_offered),
             "started": self.started,
             "finished": self.finished,
             "duration": self.duration,
+            "waiting": self.waiting,
         }
 
     @classmethod
     def from_dict(cls, data: Any) -> WashRecord | None:
-        """Rebuild from to_dict(); anything unexpected gives None."""
+        """Rebuild from to_dict(); anything unexpected gives None.
+
+        Records stored by 0.1.1 (no TwinDos keys) restore with twindos empty
+        and detergent unknown.
+        """
         if not isinstance(data, dict):
             return None
         try:
+            detergent = data.get("detergent")
             return cls(
                 state=str(data["state"]),
                 program_id=_opt_int(data.get("program_id")),
@@ -571,6 +883,8 @@ class WashRecord:
                 eco=bool(data.get("eco")),
                 spin_rpm=_opt_int(data.get("spin_rpm")),
                 soiling=_opt_int(data.get("soiling")),
+                twindos=[int(v) for v in (data.get("twindos") or [])],
+                detergent=None if detergent is None else bool(detergent),
                 extras={str(k): bool(v) for k, v in (data.get("extras") or {}).items()},
                 extras_offered=tuple(str(k) for k in (data.get("extras_offered") or ())),
                 started=float(data["started"]),
@@ -579,6 +893,7 @@ class WashRecord:
                     else float(data["finished"])
                 ),
                 duration=_opt_int(data.get("duration")),
+                waiting=data.get("waiting") is True,
             )
         except (KeyError, TypeError, ValueError):
             return None
@@ -644,11 +959,16 @@ class WashTracker:
             # Waiting to start or running with no open record: the wash
             # begins. Freeze the kept context (or the /State fallback).
             self.record = self._freeze(now=now, state=state)
+            self.record.waiting = status == 4
         elif running and status not in WASH_KEEP_RUNNING:
             # The machine left running (and is not merely paused): close
-            # the record. Status 7 (finished) is unverified on a real
-            # machine; anything else that ends the run is "interrupted".
+            # the record. Status 7 is what the WSI863 reports at the end of
+            # a wash; anything else that ends the run is "interrupted".
             self._close(status=status, now=now)
+        elif running and status == 5 and self.record.waiting:
+            # The timer ran out: the wash begins now.
+            self.record.waiting = False
+            self.record.started = now
         return self.record
 
     def _freeze(self, *, now: float, state: dict[str, Any] | None) -> WashRecord:
@@ -659,6 +979,12 @@ class WashTracker:
                 name: extra.on for name, extra in context.extras.items()
                 if extra.offered
             }
+            dosing = context.dosing
+            mode = (
+                twindos_mode([c.current for c in dosing.containers])
+                if dosing is not None
+                else TWINDOS_UNKNOWN
+            )
             return WashRecord(
                 state=WASH_RUNNING,
                 program_id=context.prog_id,
@@ -668,6 +994,10 @@ class WashTracker:
                 spin_rpm=context.spin_rpm.current,
                 # A soiling current of 0 means the program offers no levels.
                 soiling=context.soiling.current or None,
+                twindos=(
+                    [c.current for c in dosing.containers] if dosing is not None else []
+                ),
+                detergent=detergent_from_mode(mode),
                 extras=offered,
                 extras_offered=tuple(offered),
                 started=now,
@@ -692,6 +1022,8 @@ class WashTracker:
             eco=False,
             spin_rpm=None,
             soiling=None,
+            twindos=[],
+            detergent=None,
             extras={},
             extras_offered=(),
             started=now,
@@ -758,6 +1090,9 @@ class WasherSession:
         spin_rpm: int | None = None,
         soiling: int | None = None,
         extras: dict[str, bool] | None = None,
+        detergent: bool | None = None,
+        twindos: str | None = None,
+        dosing_defaults: list[int] | None = None,
     ) -> None:
         """Read 2/1577 + 2/1574 fresh, apply the one change set, write 2/1577."""
         async with self._lock:
@@ -772,6 +1107,8 @@ class WasherSession:
                 spin_rpm=spin_rpm,
                 soiling=soiling,
                 extras=extras,
+                detergent=detergent,
+                twindos=twindos,
             )
             built = build_parameters(
                 sel_fields,
@@ -781,6 +1118,9 @@ class WasherSession:
                 spin_rpm=spin_rpm,
                 soiling=soiling,
                 extras=extras,
+                detergent=detergent,
+                twindos=twindos,
+                dosing_defaults=dosing_defaults,
             )
             await self._write_and_confirm(LEAF_PROGRAM_SELECT, encode(header, built), confirm)
 
@@ -789,8 +1129,13 @@ class WasherSession:
         *,
         confirm: Confirm | None = None,
         state_check: StateCheck | None = None,
+        delay_minutes: int | None = None,
     ) -> None:
         """Write user request 1 (start) to 2/1583.
+
+        With *delay_minutes* the washer's own timer is armed instead: the
+        delay is written to 2/1577 first, then user request 8; the washer
+        counts down and starts by itself, with or without Home Assistant.
 
         *state_check* must return a FRESH appliance state read from the
         cloud (not the debounced poll); it runs under the appliance lock,
@@ -818,12 +1163,26 @@ class WasherSession:
                         "start is only possible while a program is selected "
                         "and Mobile Start is armed; check the washer"
                     )
+            request = build_start_request
+            if delay_minutes is not None:
+                raw_sel = await self._read(LEAF_PROGRAM_SELECT, 0, 0)
+                sel_header, sel_fields = decode(raw_sel)
+                raw_ctx = await self._read(LEAF_PROGRAM_CONTEXT, 0, 1)
+                _ctx_header, ctx_fields = decode(raw_ctx)
+                # Refuses before anything is written when not offered.
+                delayed = build_delayed_start(sel_fields, ctx_fields, delay_minutes)
+                await self._write_leaf(
+                    LEAF_PROGRAM_SELECT[0],
+                    LEAF_PROGRAM_SELECT[1],
+                    encode(sel_header, delayed),
+                )
+                request = build_delayed_start_request
             raw = await self._read(LEAF_USER_REQUEST, 0, 0)
             header, fields = decode(raw)
             try:
                 await self._write_and_confirm(
                     LEAF_USER_REQUEST,
-                    encode(header, build_start_request(fields)),
+                    encode(header, request(fields)),
                     confirm,
                 )
             except BaseException:

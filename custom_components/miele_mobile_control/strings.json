@@ -33,6 +33,32 @@
       "reauth_successful": "Credentials renewed"
     }
   },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Choose the washing machine",
+        "description": "Which washing machine of this account gets a measuring plug?",
+        "data": {
+          "washer": "Washing machine"
+        }
+      },
+      "plug": {
+        "title": "Measuring plug",
+        "description": "The plug that measures {washer}. With a power sensor every wash is measured minute by minute and stored as a power profile. Leave it empty for no plug.",
+        "data": {
+          "power_sensor": "Power sensor",
+          "energy_sensor": "Energy sensor"
+        },
+        "data_description": {
+          "power_sensor": "Power (W) of the plug the washer is connected to",
+          "energy_sensor": "Optional energy meter (kWh) of the same plug; when set, the total of a wash comes from it"
+        }
+      }
+    },
+    "abort": {
+      "no_washers": "No washing machine was found on this account yet"
+    }
+  },
   "entity": {
     "binary_sensor": {
       "mobile_start": {
@@ -61,7 +87,8 @@
       "wash_eco": { "name": "Wash Eco" },
       "wash_intensive": { "name": "Wash Intensive" },
       "wash_starch_hold": { "name": "Wash Starch hold" },
-      "wash_hygiene_plus": { "name": "Wash Hygiene plus" }
+      "wash_hygiene_plus": { "name": "Wash Hygiene plus" },
+      "wash_detergent": { "name": "Wash detergent" }
     },
     "button": {
       "start": {
@@ -80,6 +107,9 @@
       },
       "soiling": {
         "name": "Soiling"
+      },
+      "twindos": {
+        "name": "TwinDos"
       }
     },
     "sensor": {
@@ -150,9 +180,28 @@
       },
       "wash_duration": {
         "name": "Wash duration"
+      },
+      "twindos_1_dosing": {
+        "name": "TwinDos 1 dosing"
+      },
+      "twindos_2_dosing": {
+        "name": "TwinDos 2 dosing"
+      },
+      "wash_energy": {
+        "name": "Wash energy"
+      },
+      "power_profile": {
+        "name": "Power profile"
+      },
+      "power_profiles": {
+        "name": "Power profiles"
+      },
+      "power_plug": {
+        "name": "Power plug"
       }
     },
     "switch": {
+      "detergent": { "name": "Detergent" },
       "extra_quick": { "name": "Quick" },
       "extra_single": { "name": "SingleWash" },
       "extra_water_plus": { "name": "Water plus" },
@@ -173,6 +222,16 @@
     }
   },
   "services": {
+    "forget_profile": {
+      "name": "Forget power profile",
+      "description": "Remove a measured power profile from the matrix, e.g. after a bad measurement.",
+      "fields": {
+        "key": {
+          "name": "Key",
+          "description": "Profile key as shown in the key attribute of the power profile sensor. Empty: the key the power profile sensor shows now."
+        }
+      }
+    },
     "set_program": {
       "name": "Set program",
       "description": "Select a washing machine program and optionally its temperature, spin speed, soiling and extras, and start it.",
@@ -201,9 +260,21 @@
           "name": "Extras",
           "description": "Extras to switch on; every other extra that can be set from the app is switched off."
         },
+        "detergent": {
+          "name": "Detergent",
+          "description": "Switch TwinDos laundry liquid on or off. Off washes without liquid; on restores the last TwinDos choice (Whites or Colours) seen for this washer. Refused unless both TwinDos containers can be changed."
+        },
+        "twindos": {
+          "name": "TwinDos",
+          "description": "TwinDos laundry liquid: off, whites or colours. Must not contradict detergent. Refused unless both TwinDos containers can be changed."
+        },
         "start": {
           "name": "Start",
           "description": "Start the wash after setting it. This cannot be undone from Home Assistant and uses up the armed Mobile Start — re-arm Mobile Start at the machine for the next cycle."
+        },
+        "start_at": {
+          "name": "Start at",
+          "description": "Arm the washer's own timer for this moment: the washer counts down and starts by itself, also when Home Assistant is offline. Uses up the armed Mobile Start. A moment in the past starts at once."
         }
       }
     }

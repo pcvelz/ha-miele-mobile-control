@@ -26,17 +26,21 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.util import dt as dt_util
 
 from . import const
 from .api import MieleCloud
 from .const import (
+    ATTR_DETERGENT,
     ATTR_ECO,
     ATTR_EXTRAS,
     ATTR_PROGRAM,
     ATTR_SOILING,
     ATTR_SPIN_SPEED,
     ATTR_START,
+    ATTR_START_AT,
     ATTR_TEMPERATURE,
+    ATTR_TWINDOS,
     CONF_COUNTRY,
     DEFAULT_COUNTRY,
     DOMAIN,
@@ -44,6 +48,8 @@ from .const import (
     SERVICE_SET_PROGRAM,
 )
 from .coordinator import MieleConfigEntry, MieleCoordinator
+from .power import PowerProfiles
+from .profile import plugs_from_options
 from .washer import validate_parameters
 
 _LOGGER = logging.getLogger(__name__)
@@ -78,7 +84,27 @@ SET_PROGRAM_SCHEMA = probatio.Schema(
         probatio.Optional(ATTR_EXTRAS): probatio.All(
             probatio.EnsureList(), [cv.string]
         ),
+        probatio.Optional(ATTR_DETERGENT): bool,
+        probatio.Optional(ATTR_TWINDOS): const.twindos_value,
         probatio.Optional(ATTR_START, default=False): bool,
+        # Arms the washer's own timer for this moment (a delayed start).
+        probatio.Optional(ATTR_START_AT): cv.datetime,
+    }
+)
+
+ATTR_KEY = "key"
+SERVICE_FORGET_PROFILE = "forget_profile"
+
+FORGET_PROFILE_SCHEMA = probatio.Schema(
+    {
+        probatio.Optional(ATTR_DEVICE_ID): probatio.All(
+            probatio.EnsureList(), [cv.string], probatio.Length(min=1)
+        ),
+        probatio.Optional(ATTR_ENTITY_ID): probatio.All(
+            probatio.EnsureList(), [cv.string], probatio.Length(min=1)
+        ),
+        probatio.Optional(ATTR_AREA_ID): probatio.Any(cv.string, [cv.string]),
+        probatio.Optional(ATTR_KEY): cv.string,
     }
 )
 
@@ -99,6 +125,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: MieleConfigEntry) -> boo
     coordinator.async_restore_wash_records()
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
+    # Measured power profiles only exist for a washer with a plug in the
+    # options; without one nothing is tracked, stored or created.
+    plugs = plugs_from_options(entry.options)
+    if plugs:
+        coordinator.profiles = PowerProfiles(hass, entry, coordinator, plugs)
+        await coordinator.profiles.async_setup()
+    options_seen = dict(entry.options)
+
+    async def _async_options_updated(
+        hass: HomeAssistant, updated: MieleConfigEntry
+    ) -> None:
+        # Reload on an options change only (a reauth reloads by itself).
+        if dict(updated.options) != options_seen:
+            await hass.config_entries.async_reload(updated.entry_id)
+
+    entry.async_on_unload(entry.add_update_listener(_async_options_updated))
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     _async_setup_services(hass)
     return True
@@ -106,12 +148,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MieleConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: MieleConfigEntry) -> bool:
     """Unload the account."""
-    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    profiles = getattr(entry.runtime_data, "profiles", None)
+    if unloaded and profiles is not None:
+        await profiles.async_unload()
+    return unloaded
 
 
 @callback
 def _async_setup_services(hass: HomeAssistant) -> None:
-    """Register the set_program action once."""
+    """Register the set_program and forget_profile actions once."""
     if hass.services.has_service(DOMAIN, SERVICE_SET_PROGRAM):
         return
 
@@ -122,6 +168,27 @@ def _async_setup_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(
         DOMAIN, SERVICE_SET_PROGRAM, _async_set_program, schema=SET_PROGRAM_SCHEMA
+    )
+
+    async def _async_forget_profile(call: ServiceCall) -> None:
+        device_ids = _async_target_device_ids(hass, call)
+        coordinator, fab, name = _coordinator_for_device(hass, device_ids[0])
+        profiles = coordinator.profiles
+        if profiles is None or fab not in profiles.plugs:
+            raise ServiceValidationError(
+                f"{name} has no measuring plug configured; there are no profiles"
+            )
+        key = call.data.get(ATTR_KEY) or profiles.current_key(fab)
+        if not key:
+            raise ServiceValidationError(
+                f"{name} shows no program combination; give the key to forget"
+            )
+        if not profiles.async_forget(key):
+            raise ServiceValidationError(f"no stored profile for {key!r}")
+
+    hass.services.async_register(
+        DOMAIN, SERVICE_FORGET_PROFILE, _async_forget_profile,
+        schema=FORGET_PROFILE_SCHEMA,
     )
 
 
@@ -216,6 +283,8 @@ async def _async_run_set_program(
             spin_rpm=data.get(ATTR_SPIN_SPEED),
             soiling=data.get(ATTR_SOILING),
             extras=data.get(ATTR_EXTRAS),
+            detergent=data.get(ATTR_DETERGENT),
+            twindos=data.get(ATTR_TWINDOS),
         )
     except ValueError as err:
         raise HomeAssistantError(str(err)) from err
@@ -247,7 +316,10 @@ async def _async_run_set_program(
     if problems:
         raise HomeAssistantError("; ".join(problems))
 
-    if data.get(ATTR_START):
+    start_at = data.get(ATTR_START_AT)
+    if start_at is not None:
+        await coordinator.async_start(fab, at=dt_util.as_utc(start_at))
+    elif data.get(ATTR_START):
         await coordinator.async_start(fab)
 
 

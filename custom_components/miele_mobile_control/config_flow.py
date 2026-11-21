@@ -10,11 +10,21 @@ from __future__ import annotations
 from typing import Any, override
 
 import probatio
-from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
+from homeassistant.config_entries import (
+    ConfigEntry,
+    ConfigFlow,
+    ConfigFlowResult,
+    OptionsFlow,
+)
 from homeassistant.const import CONF_EMAIL, CONF_PASSWORD
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
+    SelectOptionDict,
+    SelectSelector,
+    SelectSelectorConfig,
     TextSelector,
     TextSelectorConfig,
     TextSelectorType,
@@ -22,6 +32,15 @@ from homeassistant.helpers.selector import (
 
 from .api import MieleApiError, MieleAuthError, MieleCloud, MieleConnectionError
 from .const import CONF_COUNTRY, DEFAULT_COUNTRY, DOMAIN
+from .profile import (
+    CONF_ENERGY_SENSOR,
+    CONF_POWER_SENSOR,
+    options_with_plug,
+    plugs_from_options,
+)
+
+# Options flow: which washer of the account the plug step is for.
+CONF_WASHER = "washer"
 
 
 def _country_default(hass: HomeAssistant) -> str:
@@ -56,10 +75,106 @@ def _reauth_schema() -> probatio.Schema:
     )
 
 
+def _plug_schema() -> probatio.Schema:
+    """Optional power and energy sensor of the washer's measuring plug."""
+    return probatio.Schema(
+        {
+            probatio.Optional(CONF_POWER_SENSOR): EntitySelector(
+                EntitySelectorConfig(domain="sensor", device_class="power")
+            ),
+            probatio.Optional(CONF_ENERGY_SENSOR): EntitySelector(
+                EntitySelectorConfig(domain="sensor", device_class="energy")
+            ),
+        }
+    )
+
+
+class MieleOptionsFlow(OptionsFlow):
+    """Configure: choose the measuring plug of each washing machine.
+
+    One step per washer (a washer is picked first when the account has
+    several). An empty power sensor means no plug: nothing is measured.
+    Saving the options reloads the entry.
+    """
+
+    def __init__(self) -> None:
+        self._fab: str | None = None
+
+    def _washers(self) -> dict[str, str]:
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        washers = getattr(coordinator, "data", None) or []
+        return {w.fab: f"{w.tech_type} ({w.fab})" for w in washers}
+
+    @override
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        washers = self._washers()
+        if not washers:
+            return self.async_abort(reason="no_washers")
+        if len(washers) == 1:
+            self._fab = next(iter(washers))
+            return await self.async_step_plug()
+        if user_input is not None:
+            self._fab = user_input[CONF_WASHER]
+            return await self.async_step_plug()
+        return self.async_show_form(
+            step_id="init",
+            data_schema=probatio.Schema(
+                {
+                    probatio.Required(CONF_WASHER): SelectSelector(
+                        SelectSelectorConfig(
+                            options=[
+                                SelectOptionDict(value=fab, label=label)
+                                for fab, label in washers.items()
+                            ]
+                        )
+                    )
+                }
+            ),
+        )
+
+    async def async_step_plug(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        fab = self._fab
+        if fab is None:
+            return await self.async_step_init()
+        options = dict(self.config_entry.options)
+        if user_input is not None:
+            return self.async_create_entry(
+                data=options_with_plug(
+                    options,
+                    fab,
+                    user_input.get(CONF_POWER_SENSOR),
+                    user_input.get(CONF_ENERGY_SENSOR),
+                )
+            )
+        plug = plugs_from_options(options).get(fab)
+        current = (
+            {}
+            if plug is None
+            else {
+                CONF_POWER_SENSOR: plug.power_sensor,
+                **({CONF_ENERGY_SENSOR: plug.energy_sensor} if plug.energy_sensor else {}),
+            }
+        )
+        return self.async_show_form(
+            step_id="plug",
+            data_schema=self.add_suggested_values_to_schema(_plug_schema(), current),
+            description_placeholders={"washer": self._washers().get(fab, fab)},
+        )
+
+
 class MieleMobileControlConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle the config flow."""
 
     VERSION = 1
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(config_entry: ConfigEntry) -> MieleOptionsFlow:
+        return MieleOptionsFlow()
 
     async def _async_try_login(self, user_input: dict[str, Any]) -> None:
         cloud = MieleCloud(

@@ -206,6 +206,40 @@ def test_finished_closes_with_duration():
     assert tracker.update(7, now=NOW + 95 * 60, state={"Status": 7}) is closed
 
 
+def test_duration_counts_from_the_real_start_not_from_the_timer():
+    """Measured on a real wash: the washer waited on its own timer from 12:01
+    to 12:15 and washed until 15:57. The wash took 222 minutes, not 236."""
+    tracker = washer.WashTracker()
+    record = tracker.update(4, now=NOW, state={"Status": 4})
+    assert record.waiting is True
+    tracker.update(4, now=NOW + 7 * 60, state={"Status": 4})
+    tracker.update(5, now=NOW + 14 * 60, state={"Status": 5})
+    assert record.waiting is False
+    assert record.started == NOW + 14 * 60
+    # a pause and the next running poll do not move the start again
+    tracker.update(6, now=NOW + 20 * 60, state={"Status": 6})
+    tracker.update(5, now=NOW + 21 * 60, state={"Status": 5})
+    assert record.started == NOW + 14 * 60
+    closed = tracker.update(7, now=NOW + (14 + 222) * 60, state={"Status": 7})
+    assert closed.state == washer.WASH_FINISHED
+    assert closed.duration == 222
+
+
+def test_waiting_survives_a_restart():
+    tracker = washer.WashTracker()
+    record = tracker.update(4, now=NOW, state={"Status": 4})
+    restored = washer.WashRecord.from_dict(record.to_dict())
+    assert restored.waiting is True
+    tracker = washer.WashTracker()
+    tracker.record = restored
+    tracker.update(5, now=NOW + 14 * 60, state={"Status": 5})
+    assert restored.started == NOW + 14 * 60 and restored.waiting is False
+    # a record stored before this field existed counts as already begun
+    old = record.to_dict()
+    del old["waiting"]
+    assert washer.WashRecord.from_dict(old).waiting is False
+
+
 def test_interrupting_statuses_close_the_record():
     for status in (1, 2, 3, 8, 9, 0):
         tracker = washer.WashTracker()

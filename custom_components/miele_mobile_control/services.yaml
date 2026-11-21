@@ -52,7 +52,31 @@ set_program:
             - intensive
             - starch_hold
             - hygiene_plus
+    detergent:
+      selector:
+        boolean:
+    twindos:
+      example: "off"
+      selector:
+        select:
+          options:
+            - "off"
+            - whites
+            - colours
     start:
       default: false
       selector:
         boolean:
+    start_at:
+      selector:
+        datetime:
+
+forget_profile:
+  target:
+    entity:
+      integration: miele_mobile_control
+  fields:
+    key:
+      example: "Cottons|20|eco=0|1600|soil=2|none"
+      selector:
+        text:

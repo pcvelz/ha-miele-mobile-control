@@ -29,7 +29,10 @@ ATTR_ECO: Final = "eco"
 ATTR_SPIN_SPEED: Final = "spin_speed"
 ATTR_SOILING: Final = "soiling"
 ATTR_EXTRAS: Final = "extras"
+ATTR_DETERGENT: Final = "detergent"
+ATTR_TWINDOS: Final = "twindos"
 ATTR_START: Final = "start"
+ATTR_START_AT: Final = "start_at"
 
 SERVICE_SET_PROGRAM: Final = "set_program"
 
@@ -180,6 +183,22 @@ def _centi_value(value: Any) -> float | None:
 # ---------- set_program action helpers (pure, tested in tests/test_action.py) ----------
 
 
+def twindos_value(value: Any) -> str:
+    """Schema validator for the twindos field: a pattern name, lower case.
+
+    An unquoted YAML ``off`` arrives as boolean False and means "off"; any
+    other value that is not a known pattern raises ValueError.
+    """
+    if value is False:
+        return "off"
+    if isinstance(value, str) and value.strip().lower() in washer.TWINDOS_PATTERNS:
+        return value.strip().lower()
+    raise ValueError(
+        f"unknown twindos pattern: {value!r}; "
+        f"use one of {', '.join(washer.TWINDOS_PATTERNS)}"
+    )
+
+
 def build_changes(
     *,
     temperature: int | None = None,
@@ -187,13 +206,17 @@ def build_changes(
     spin_rpm: int | None = None,
     soiling: int | None = None,
     extras: list[str] | None = None,
+    detergent: bool | None = None,
+    twindos: str | None = None,
 ) -> dict[str, Any]:
     """Turn action data into a washer change dict, checking everything that
     can be checked without the program's context.
 
     Raises ValueError for an eco request without a temperature (the eco
-    variant cannot be told apart) and for extra names the washer does not
-    know. Offered-value checks happen later, against the program context.
+    variant cannot be told apart), for extra or TwinDos names the washer
+    does not know, and for a detergent/twindos combination that contradicts
+    itself (detergent off with a non-off pattern, or on with "off").
+    Offered-value checks happen later, against the program context.
     """
     changes: dict[str, Any] = {}
     if temperature is not None:
@@ -209,6 +232,21 @@ def build_changes(
         unknown = [name for name in extras if name not in washer.EXTRAS]
         if unknown:
             raise ValueError(f"unknown extras: {', '.join(unknown)}")
+    if twindos is not None:
+        if twindos not in washer.TWINDOS_PATTERNS:
+            raise ValueError(
+                f"unknown twindos pattern: {twindos!r}; "
+                f"use one of {', '.join(washer.TWINDOS_PATTERNS)}"
+            )
+        if detergent is False and twindos != "off":
+            raise ValueError(
+                f"detergent: false contradicts twindos: {twindos!r}"
+            )
+        if detergent is True and twindos == "off":
+            raise ValueError("detergent: true contradicts twindos: 'off'")
+        changes["twindos"] = twindos
+    if detergent is not None:
+        changes["detergent"] = detergent
     return changes
 
 
@@ -243,6 +281,8 @@ def plan_set_program(
     spin_rpm: int | None = None,
     soiling: int | None = None,
     extras: list[str] | None = None,
+    detergent: bool | None = None,
+    twindos: str | None = None,
 ) -> tuple[int, dict[str, Any], bool]:
     """Decide what the set_program action writes and in which order.
 
@@ -264,6 +304,8 @@ def plan_set_program(
         spin_rpm=spin_rpm,
         soiling=soiling,
         extras=extras,
+        detergent=detergent,
+        twindos=twindos,
     )
     if context is not None and context.prog_id == pid:
         # Same program: everything is validated now, before any write.
@@ -308,6 +350,21 @@ def verify_written(context: Any, changes: Mapping[str, Any]) -> list[str]:
         problems.append(
             f"the appliance kept soiling level {context.soiling.current}"
         )
+    mode = (
+        washer.twindos_mode([c.current for c in context.dosing.containers])
+        if context.dosing is not None
+        else None
+    )
+    twindos = changes.get("twindos")
+    if twindos is not None and mode != twindos:
+        problems.append(f"the appliance kept TwinDos on {mode!r}")
+    detergent = changes.get("detergent")
+    if detergent is not None and twindos is None:
+        if washer.detergent_from_mode(mode) is not detergent:
+            problems.append(
+                f"the appliance kept TwinDos detergent dosing "
+                f"{'off' if detergent else 'on'}"
+            )
     for name, on in (changes.get("extras") or {}).items():
         extra = context.extras.get(name)
         if extra is None or extra.on != on:

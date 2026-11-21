@@ -14,6 +14,7 @@ from __future__ import annotations
 import time
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from datetime import datetime
 import logging
 from typing import Any
 
@@ -35,11 +36,16 @@ from .washer import (
     WashRecord,
     WashTracker,
     WasherSession,
+    NotOfferedError,
     WriteNotConfirmedError,
+    delay_minutes,
+    detergent_from_mode,
     mobile_start_armed,
     parse_context,
     parse_program_list,
     start_allowed,
+    twindos_mode,
+    twindos_target,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -91,11 +97,19 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         self.api = api
         # Program list cache, keyed by fab; kept only for the armed session.
         self._program_lists: dict[str, list[int]] = {}
+        # TwinDos "on" pattern per washer: the last non-off container values
+        # seen, so the Detergent switch can restore them after Off. Patterns
+        # are measured in washer.TWINDOS_PATTERNS; this only remembers what
+        # this washer last showed.
+        self._twindos_last: dict[str, list[int]] = {}
         # Serialized write sessions per appliance.
         self._sessions: dict[str, WasherSession] = {}
         # Wash-record state machine per appliance, seeded from the restore
         # cache of the previous run by async_restore_wash_records().
         self._wash_trackers: dict[str, WashTracker] = {}
+        # Measured power profiles (power.PowerProfiles); None when no washer
+        # of the entry has a measuring plug in the options.
+        self.profiles: Any = None
 
     # ---------- wash record restore ----------
 
@@ -220,6 +234,14 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
             if not armed:
                 self._program_lists.pop(fab, None)
 
+            # TwinDos: remember the last non-off container values ("on"
+            # restores them after Off). An unknown pattern is not
+            # remembered, so it cannot overwrite a known one.
+            if context is not None and context.dosing is not None:
+                values = [c.current for c in context.dosing.containers]
+                if twindos_mode(values) in ("whites", "colours"):
+                    self._twindos_last[fab] = values
+
             # The wash record: keep the newest good context and run the
             # none/running/finished/interrupted transitions. The tracker is
             # independent of whether 2/1574 can actually be read in Status
@@ -322,6 +344,18 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
             soiling = changes.get("soiling")
             if soiling is not None and ctx.soiling.current != soiling:
                 return False
+            mode = (
+                twindos_mode([c.current for c in ctx.dosing.containers])
+                if ctx.dosing is not None
+                else None
+            )
+            twindos = changes.get("twindos")
+            if twindos is not None and mode != twindos:
+                return False
+            detergent = changes.get("detergent")
+            if detergent is not None and twindos is None:
+                if detergent_from_mode(mode) is not detergent:
+                    return False
             for name, on in (changes.get("extras") or {}).items():
                 extra = ctx.extras.get(name)
                 if extra is None or extra.on != on:
@@ -344,7 +378,7 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         """Run one session operation and translate its errors for the UI."""
         try:
             await coro
-        except WriteNotConfirmedError as err:
+        except (WriteNotConfirmedError, NotOfferedError) as err:
             raise HomeAssistantError(str(err)) from err
         except MieleAuthError as err:
             raise HomeAssistantError(
@@ -391,15 +425,32 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         spin_rpm: int | None = None,
         soiling: int | None = None,
         extras: dict[str, bool] | None = None,
+        detergent: bool | None = None,
+        twindos: str | None = None,
     ) -> None:
         """Apply one change set via the serialized session write."""
         self._armed_or_raise_guard(fab)
+        if detergent and twindos is None:
+            # Refuse "on" before any read or write when nothing to restore.
+            try:
+                twindos_target(
+                    detergent=True, twindos=None, last_on=self._twindos_last.get(fab)
+                )
+            except NotOfferedError as err:
+                raise HomeAssistantError(str(err)) from err
         changes: dict[str, Any] = {
             "temperature": temperature,
             "eco": eco,
             "spin_rpm": spin_rpm,
             "soiling": soiling,
             "extras": extras,
+            "detergent": detergent,
+            "twindos": twindos,
+            # "Detergent on" restores the last non-off pattern seen for this
+            # washer; build_parameters refuses when none is known.
+            "dosing_defaults": (
+                self._twindos_last.get(fab) if detergent and twindos is None else None
+            ),
         }
         await self._run_write(
             fab,
@@ -409,8 +460,12 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         )
         _LOGGER.debug("%s: parameters written", fab)
 
-    async def async_start(self, fab: str) -> None:
+    async def async_start(self, fab: str, at: datetime | None = None) -> None:
         """Send Mobile Start; every outcome is reported honestly.
+
+        With *at* the washer's own timer is armed for that moment (it then
+        starts by itself, also when Home Assistant is offline); a moment
+        that has passed starts at once.
 
         The guard on the polled state is only a fast pre-check with a clear
         message; the session then reads /State FRESH from the cloud under
@@ -429,11 +484,17 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
         async def fresh_state() -> dict[str, Any]:
             return await self.api.async_get_state(fab)
 
+        delay = None
+        if at is not None:
+            delay = delay_minutes(at.timestamp(), time.time()) or None
+
         try:
             await self._session_for(fab).start(
-                confirm=self._confirm_started(fab), state_check=fresh_state
+                confirm=self._confirm_started(fab),
+                state_check=fresh_state,
+                delay_minutes=delay,
             )
-        except StartRefusedError as err:
+        except (StartRefusedError, NotOfferedError) as err:
             raise HomeAssistantError(str(err)) from err
         except WriteNotConfirmedError as err:
             raise HomeAssistantError(str(err)) from err
@@ -454,4 +515,6 @@ class MieleCoordinator(DataUpdateCoordinator[list[WasherData]]):
                 f"the appliance answer was unexpected: {err}"
             ) from err
         _LOGGER.debug("%s: start requested", fab)
-        await self.async_request_refresh()
+        # Not debounced: the entities show the confirmed state by the time
+        # the action returns, so an automation can read it right after.
+        await self.async_refresh()

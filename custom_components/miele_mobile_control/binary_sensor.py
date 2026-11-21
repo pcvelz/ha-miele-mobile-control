@@ -36,6 +36,7 @@ async def async_setup_entry(
         lambda washer: [
             MieleMobileStartBinarySensor(coordinator, washer),
             MieleDoorBinarySensor(coordinator, washer),
+            MieleWashDetergentBinarySensor(coordinator, washer),
             *[MieleWashExtraBinarySensor(coordinator, washer, name) for name in EXTRAS],
         ],
     )
@@ -77,6 +78,35 @@ class MieleDoorBinarySensor(MieleStateEntity, BinarySensorEntity):
             return None
         signal = washer.state.get("SignalDoor")
         return None if signal is None else bool(signal)
+
+
+class MieleWashDetergentBinarySensor(MieleStateEntity, BinarySensorEntity):
+    """Whether the recorded wash ran with TwinDos detergent dosing.
+
+    unknown when no wash is recorded or the integration never saw the
+    program's dosing block (a wash started at the machine), or when the
+    values match no measured TwinDos pattern. The raw container values and
+    the pattern name ride along as the ``twindos`` / ``twindos_mode``
+    attributes of ``sensor.<machine>_wash_extras``.
+    """
+
+    _attr_translation_key = "wash_detergent"
+    _attr_icon = "mdi:cup-outline"
+
+    def __init__(self, coordinator: MieleCoordinator, washer: WasherData) -> None:
+        super().__init__(coordinator, washer, "wash_detergent")
+
+    @property
+    def record(self):
+        data = self.washer
+        return data.wash if data is not None else None
+
+    @property
+    def is_on(self) -> bool | None:
+        record = self.record
+        if record is None:
+            return None
+        return record.detergent
 
 
 class MieleWashExtraBinarySensor(MieleStateEntity, BinarySensorEntity):
